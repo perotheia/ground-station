@@ -14,6 +14,27 @@
 # monitoring) is the service that grows here. Until it lands, this compose only
 # wires the shared network + an ops shell with fleet.py on PATH.
 services:
+  # The registry for OUR two distribution planes — runtime+services (theia/dist)
+  # and user apps (user-ws/dist). SEPARATE from the Mender GW's internal seaweedfs
+  # (which is .mender-only, no external port): this is the externally-reachable S3
+  # that `theia release --runtime/--app` writes + colony's factory provision reads.
+  #   bucket theia-runtime/<ver>/{theia-runtime,theia-services}_<arch>.deb + index.json
+  #   bucket theia-apps/<fleet>/<app>/<ver>/{<fc>_<arch>.deb, manifest.json, index.json}
+  minio:
+    image: minio/minio:latest
+    container_name: gs-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "9000:9000"   # S3 API — colony/theia release reach this from the DMZ
+      - "9001:9001"   # console
+    environment:
+      MINIO_ROOT_USER: "${MINIO_USER:-theia}"
+      MINIO_ROOT_PASSWORD: "${MINIO_PASSWORD:-theiaminio}"
+    volumes:
+      - gs-minio-data:/data
+    networks:
+      - mender
+
   fleet-ops:
     image: python:3.12-slim
     container_name: gs-fleet-ops
@@ -29,6 +50,9 @@ services:
       MENDER_URL: "${MENDER_URL:-https://docker.mender.io}"
     networks:
       - mender
+
+volumes:
+  gs-minio-data:
 
 # The Mender GW (up.sh) creates this network; join it as external so fleet-ops
 # reaches the deployments/inventory APIs without re-declaring the GW services.
