@@ -1,0 +1,38 @@
+# ground-station/docker-compose.yml — the fleet operator surface.
+#
+# This compose is the OPERATOR layer. The Mender GW itself is brought up
+# separately by `mender/server/up.sh up` (it clones + composes upstream Mender OSS
+# at a pinned tag — too large + fast-moving to vendor here). This file adds the
+# fleet-ops surface ON TOP of that GW and joins its network, preserving the
+# users/devices/packages/deployments separation Mender already models.
+#
+#   mender/server/up.sh up          # 1. the Mender GW (deviceauth/inventory/deployments/S3)
+#   docker compose up -d            # 2. the operator layer (this file)
+#
+# v1 = the fleet-ops CLI (fleet/fleet.py) against the GW; the operator UX (web
+# dashboard: campaign planning, device-group targeting, rollout + health/inventory
+# monitoring) is the service that grows here. Until it lands, this compose only
+# wires the shared network + an ops shell with fleet.py on PATH.
+services:
+  fleet-ops:
+    image: python:3.12-slim
+    container_name: gs-fleet-ops
+    working_dir: /gs
+    volumes:
+      - ./fleet:/gs/fleet:ro
+      - ./mender:/gs/mender:ro
+    # No heavy deps — fleet.py is urllib-only. Idle shell; operators exec in to
+    # run `python fleet/fleet.py <cmd>` against the GW. The web UX replaces this.
+    command: ["sleep", "infinity"]
+    environment:
+      # Point fleet.py at the Mender GW (the up.sh server). Override per deploy.
+      MENDER_URL: "${MENDER_URL:-https://docker.mender.io}"
+    networks:
+      - mender
+
+# The Mender GW (up.sh) creates this network; join it as external so fleet-ops
+# reaches the deployments/inventory APIs without re-declaring the GW services.
+networks:
+  mender:
+    external: true
+    name: "${MENDER_NETWORK:-mender}"
