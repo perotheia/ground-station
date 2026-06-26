@@ -56,6 +56,8 @@ def _channel(target: str):
 # UcmState ordinal → name (mirrors system_services_ucm.UcmState).
 UCM_STATE = ["IDLE", "DOWNLOADED", "VALIDATED", "STAGED", "INSTALLING",
              "RESTARTING", "VERIFYING", "ACTIVE", "ROLLBACK"]
+# SmState ordinal → name (mirrors system_services_sm.SmState).
+SM_STATE = ["OFF", "STARTING", "RUNNING", "DEGRADED", "UPDATE", "SHUTDOWN"]
 
 
 def request_update(target: str, name: str, version: str, *, kind: int = 0,
@@ -89,4 +91,9 @@ def get_progress(target: str, timeout: float = 8.0) -> dict:
             "scope": p.scope,
             "detail": p.detail,
             "ts_ns": p.ts_ns,
+            # the SM-session plane
+            "sm_ok": p.sm_ok,
+            "sm_state": p.sm_state,
+            "sm_state_name": SM_STATE[p.sm_state] if p.sm_state < len(SM_STATE) else str(p.sm_state),
+            "sm_ts_ns": p.sm_ts_ns,
         }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { api } from '../api'
 import { usePoll } from '../App'
+import { Rollout } from './Rollout'
 
 const STATUS_COLOR = {
   finished: 'bg-emerald-500/15 text-emerald-400',
@@ -40,13 +41,9 @@ function RolloutBar({ stats }) {
 
 export function Deployments() {
   const { data, error, loading, refresh } = usePoll(() => api.deployments(), [], 6000)
-  const [detail, setDetail] = useState(null)
+  const [rolloutId, setRolloutId] = useState(null)
 
   const deps = data?.deployments || []
-
-  const openDetail = async (id) => {
-    try { setDetail(await api.deployment(id)) } catch (e) { setDetail({ error: e.message }) }
-  }
 
   return (
     <div className="space-y-4">
@@ -82,28 +79,14 @@ export function Deployments() {
                 <td className="cell"><StatusBadge status={d.status} /></td>
                 <td className="cell"><RolloutBar stats={d.statistics?.status || d.stats} /></td>
                 <td className="cell text-muted text-xs">{(d.created || '').slice(0, 19).replace('T', ' ')}</td>
-                <td className="cell"><button className="btn-ghost" onClick={() => openDetail(d.id)}>Details</button></td>
+                <td className="cell"><button className="btn-ghost" onClick={() => setRolloutId(d.id)}>Rollout</button></td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      {detail && (
-        <div className="card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold">Deployment detail</h3>
-            <button className="btn-ghost" onClick={() => setDetail(null)}>Close</button>
-          </div>
-          {detail.error ? (
-            <div className="text-red-300 text-sm">{detail.error}</div>
-          ) : (
-            <pre className="text-xs overflow-auto bg-ink/50 rounded p-3">
-              {JSON.stringify(detail, null, 2)}
-            </pre>
-          )}
-        </div>
-      )}
+      {rolloutId && <Rollout depId={rolloutId} onClose={() => setRolloutId(null)} />}
     </div>
   )
 }

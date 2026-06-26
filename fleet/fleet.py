@@ -161,6 +161,16 @@ class Mender:
             raise RuntimeError(f"statistics [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"{}")
 
+    def abort_deployment(self, dep_id: str) -> bool:
+        """Abort an in-flight deployment (the Mender transport-plane cancel):
+        PUT .../{id}/status {status: aborted}. Devices not yet finished stop;
+        the on-device UCM verify-window rolls back any half-applied install."""
+        st, data, _ = self._req(
+            "PUT", f"{self.dep}/{dep_id}/status", body={"status": "aborted"})
+        if st not in (200, 204):
+            raise RuntimeError(f"abort [{st}]: {data.decode(errors='replace')[:200]}")
+        return True
+
     # ---- inventory (device groups) ----
     def devices(self, group: str | None = None) -> list:
         path = "/api/management/v1/inventory/devices?per_page=500"

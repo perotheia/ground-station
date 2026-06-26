@@ -30,4 +30,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ fleet, app, version, deploy }),
     }),
+  // rollout — both planes for one deployment (Mender transport + UCM/SM ECU)
+  rollout: (depId) => call(`/deployments/${depId}/rollout`),
+  abort: (depId) => call(`/deployments/${depId}/abort`, { method: 'POST' }),
+  // per-device ECU lifecycle
+  ucmProgress: (deviceId) => call(`/ucm/${deviceId}/progress`),
 }

@@ -30,6 +30,10 @@ message UcmProgressReply {
     string detail  = 5;
     uint64 ts_ns   = 6;
     bool   ok      = 7;
+    // The SM-session plane (system_services_sm.SmState: 2 RUNNING, 4 UPDATE, ...).
+    uint32 sm_state = 8;
+    uint64 sm_ts_ns = 9;
+    bool   sm_ok    = 10;
 }
 message UcmProgressCall { }
 
