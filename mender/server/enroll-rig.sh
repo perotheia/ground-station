@@ -36,11 +36,19 @@ BASE="https://$SERVER_IP"
 echo "[enroll] $RIG → $SERVER_HOST ($SERVER_IP)"
 
 # --- 1. fetch the server CA (self-signed cert == its own CA) ---
-# SERVER_SSH = the ssh alias of the host running the Mender server (default dalek).
+# Two ways to get it:
+#   SERVER_CA=/path/to/mender.crt   — a local CA file (the containerized/CI path,
+#                                     where there is no SSH host running the server)
+#   SERVER_SSH=<alias>              — ssh into the server host and cat its CA
+#                                     (the dev-box/dalek path; default).
 SERVER_SSH="${SERVER_SSH:-dalek}"
 ca="$(mktemp)"
-ssh "$SERVER_SSH" 'cat ~/mender-server/compose/certs/mender.crt' > "$ca"
-[ -s "$ca" ] || { echo "could not fetch server CA from $SERVER_SSH"; exit 1; }
+if [ -n "${SERVER_CA:-}" ] && [ -s "${SERVER_CA}" ]; then
+    cp "$SERVER_CA" "$ca"
+else
+    ssh "$SERVER_SSH" 'cat ~/mender-server/compose/certs/mender.crt' > "$ca"
+fi
+[ -s "$ca" ] || { echo "could not get server CA (set SERVER_CA=<file> or SERVER_SSH=<host>)"; exit 1; }
 
 # --- 2-4. ship CA + hosts + mender.conf + identity/inventory to the rig ---
 scp "$ca" "$RIG:/tmp/mender-server-ca.crt" >/dev/null
@@ -105,24 +113,46 @@ if [ -n "$BASELINE_ARTIFACT" ] && [ -f "$BASELINE_ARTIFACT" ]; then
                 sudo mender-update commit >/dev/null 2>&1 || true'
 fi
 
+# API helper: hit the server's Management API. Direct curl when we have the CA
+# locally (the CI/container path — the API is network-reachable); else proxy the
+# call through SSH on the server host (the dev-box/dalek path).
+_api() {  # METHOD PATH [DATA]
+    local m="$1" p="$2" d="${3:-}"
+    if [ -n "${SERVER_CA:-}" ]; then
+        curl -sk -X "$m" ${AUTHHDR:+-H "$AUTHHDR"} ${d:+-H 'Content-Type: application/json' -d "$d"} ${BASICAUTH:+-u "$BASICAUTH"} "$BASE$p"
+    else
+        ssh "$SERVER_SSH" "curl -sk -X '$m' ${AUTHHDR:+-H '$AUTHHDR'} ${d:+-H 'Content-Type: application/json' -d '$d'} ${BASICAUTH:+-u '$BASICAUTH'} '$BASE$p'"
+    fi
+}
+
 # --- 6. start the 4.x daemons → submit auth request ---
 echo "[enroll] starting mender-authd + mender-updated (submits the auth request)"
 ssh "$RIG" 'sudo systemctl restart mender-authd; sleep 3; sudo systemctl restart mender-updated'
-sleep 8
 
-# --- 7. accept the pending device via the server device-auth API ---
-jwt="$(ssh "$SERVER_SSH" "curl -sk -u '$ADMIN_EMAIL:$ADMIN_PASS' -X POST '$BASE/api/management/v1/useradm/auth/login'")"
-# find the device's PENDING auth set (a re-enrol adds a new set to the same device)
-devs="$(ssh "$SERVER_SSH" "curl -sk -H 'Authorization: Bearer $jwt' '$BASE/api/management/v2/devauth/devices'")"
-read -r dev aset <<EOF2
-$(echo "$devs" | python3 -c 'import sys,json
-for d in json.load(sys.stdin):
+# --- 7. accept the device via the device-auth API. POLL for it to appear PENDING
+#        instead of a fixed sleep (the old `sleep 8` raced the client's auth
+#        request — the device wasn't listed yet → "no pending auth set"). ---
+BASICAUTH="$ADMIN_EMAIL:$ADMIN_PASS"; AUTHHDR=""
+jwt="$(_api POST /api/management/v1/useradm/auth/login)"; jwt="${jwt//\"/}"
+[ -n "$jwt" ] || { echo "[enroll] server login failed"; exit 1; }
+BASICAUTH=""; AUTHHDR="Authorization: Bearer $jwt"
+dev=""; aset=""
+for _try in $(seq 1 20); do
+    devs="$(_api GET /api/management/v2/devauth/devices)"
+    read -r dev aset <<EOF2
+$(printf '%s' "$devs" | python3 -c 'import sys,json
+try: data=json.load(sys.stdin)
+except Exception: data=[]
+for d in data:
     for a in d.get("auth_sets",[]):
-        if a["status"]=="pending": print(d["id"], a["id"]); break')
+        if a["status"]=="pending": print(d["id"], a["id"]); break' 2>/dev/null)
 EOF2
-[ -n "$dev" ] || { echo "[enroll] no pending auth set — check the client logs on $RIG"; exit 1; }
+    [ -n "$dev" ] && break
+    sleep 2
+done
+[ -n "$dev" ] || { echo "[enroll] no pending auth set after polling — check client logs on $RIG"; exit 1; }
 echo "[enroll] accepting device $dev (auth set $aset)"
-ssh "$SERVER_SSH" "curl -sk -H 'Authorization: Bearer $jwt' -H 'Content-Type: application/json' -X PUT '$BASE/api/management/v2/devauth/devices/$dev/auth/$aset/status' -d '{\"status\":\"accepted\"}'"
+_api PUT "/api/management/v2/devauth/devices/$dev/auth/$aset/status" '{"status":"accepted"}'
 
 # --- 8. restart → authorize + submit inventory + poll for deployments ---
 ssh "$RIG" 'sudo systemctl restart mender-authd; sleep 3; sudo systemctl restart mender-updated'
