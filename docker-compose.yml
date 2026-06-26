@@ -54,6 +54,9 @@ services:
       S3_ENDPOINT: "${S3_ENDPOINT:-http://gs-minio:9000}"
       MINIO_USER: "${MINIO_USER:-theia}"
       MINIO_PASSWORD: "${MINIO_PASSWORD:-theiaminio}"
+      # API key gating the mutating routes (deploy/publish). Unset → open (the
+      # browser-only path); set it the moment a remote caller (CI, MCP) reaches in.
+      GS_API_KEY: "${GS_API_KEY:-}"
     networks:
       - mender
 
