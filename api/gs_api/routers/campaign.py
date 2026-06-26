@@ -68,9 +68,10 @@ class CampaignStart(BaseModel):
 @router.post("/{device_id}/start", dependencies=[Depends(require_key)])
 def start(device_id: str, req: CampaignStart) -> dict:
     """Start a VEHICLE campaign on the coordinator board (GS as the fleet operator):
-    V-UCM fans the package to every board's UCM + runs the CMP_CONFIRMING aggregate
-    barrier. Mutating → X-GS-Key gated. Poll /campaign/{id}/status to watch the
-    barrier (INSTALLING → CONFIRMING → VALIDATING → DONE)."""
+    V-UCM fans RequestUpdate to every board's UCM (each installs its role package via
+    Mender standalone + holds PROVISIONAL), then runs the aggregate barrier. Mutating
+    → X-GS-Key gated. Poll /campaign/{id}/status: INSTALLING → CONFIRMING →
+    AWAITING_COMMIT (then the operator commits)."""
     target = _coordinator_endpoint(device_id)
     try:
         r = com_client.check_for_campaign(target, req.campaign_id, req.version,
@@ -78,3 +79,32 @@ def start(device_id: str, req: CampaignStart) -> dict:
         return {"device": device_id, "target": target, **r}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"campaign start ({target}): {e}")
+
+
+class CampaignDecide(BaseModel):
+    campaign_id: str
+
+
+@router.post("/{device_id}/commit", dependencies=[Depends(require_key)])
+def commit(device_id: str, req: CampaignDecide) -> dict:
+    """L4-C step 7: the operator audited the new software (all boards PROVISIONAL,
+    status AWAITING_COMMIT) and COMMITS — V-UCM fans Confirm to every board → ACTIVE.
+    Mutating → X-GS-Key gated."""
+    target = _coordinator_endpoint(device_id)
+    try:
+        r = com_client.campaign_decide(target, req.campaign_id, rollback=False)
+        return {"device": device_id, "target": target, "decision": "commit", **r}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"campaign commit ({target}): {e}")
+
+
+@router.post("/{device_id}/rollback", dependencies=[Depends(require_key)])
+def rollback(device_id: str, req: CampaignDecide) -> dict:
+    """L4-C step 7: the operator REJECTS the new software — V-UCM fans Cancel to
+    every board → ROLLBACK. Mutating → X-GS-Key gated."""
+    target = _coordinator_endpoint(device_id)
+    try:
+        r = com_client.campaign_decide(target, req.campaign_id, rollback=True)
+        return {"device": device_id, "target": target, "decision": "rollback", **r}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"campaign rollback ({target}): {e}")

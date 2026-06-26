@@ -59,9 +59,9 @@ UCM_STATE = ["IDLE", "DOWNLOADED", "VALIDATED", "STAGED", "INSTALLING",
 # SmState ordinal → name (mirrors system_services_sm.SmState).
 SM_STATE = ["OFF", "STARTING", "RUNNING", "DEGRADED", "UPDATE", "SHUTDOWN"]
 # CampaignState ordinal → name (mirrors system_services_vucm.CampaignState; the
-# WIRE order: CONFIRMING is appended =7, so it's last not mid-list).
+# WIRE order: CONFIRMING appended =7, AWAITING_COMMIT =8 — last, not mid-list).
 CAMPAIGN_STATE = ["IDLE", "PLANNING", "AUTHORIZING", "INSTALLING", "VALIDATING",
-                  "DONE", "ROLLBACK", "CONFIRMING"]
+                  "DONE", "ROLLBACK", "CONFIRMING", "AWAITING_COMMIT"]
 
 
 def request_update(target: str, name: str, version: str, *, kind: int = 0,
@@ -112,6 +112,21 @@ def campaign_status(target: str, timeout: float = 8.0) -> dict:
             "detail": s.detail,
             "ts_ns": s.ts_ns,
         }
+
+
+def campaign_decide(target: str, campaign_id: str, rollback: bool,
+                    timeout: float = 10.0) -> dict:
+    """L4-C operator commit/rollback (step 7): once the campaign is AWAITING_COMMIT,
+    commit (rollback=False → V-UCM fans Confirm) or roll back (rollback=True → fans
+    Cancel). Returns {accepted, state}."""
+    _ensure_stubs()
+    with _channel(target) as ch:
+        stub = _pbg.VucmViewStub(ch)
+        rep = stub.Decide(_pb.VucmDecisionCall(campaign_id=campaign_id, rollback=rollback),
+                          timeout=timeout)
+        return {"accepted": rep.accepted == 1, "state": rep.state,
+                "state_name": CAMPAIGN_STATE[rep.state] if rep.state < len(CAMPAIGN_STATE)
+                              else str(rep.state)}
 
 
 def get_progress(target: str, timeout: float = 8.0) -> dict:

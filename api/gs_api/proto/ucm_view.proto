@@ -58,15 +58,18 @@ message VucmCampaignReply {
 }
 message VucmStatusCall { }
 message VucmStatusReply {
-    uint32 state       = 1;   // CampaignState: 0 IDLE..6 ROLLBACK, 7 CONFIRMING
+    uint32 state       = 1;   // CampaignState: 0 IDLE..7 CONFIRMING, 8 AWAITING_COMMIT
     string campaign_id = 2;
     string version     = 3;
     string detail      = 4;
     uint64 ts_ns       = 5;
     bool   valid       = 6;
 }
+message VucmDecisionCall  { string campaign_id = 1; bool rollback = 2; }
+message VucmDecisionReply { uint32 accepted = 1; uint32 state = 2; }
 
 service VucmView {
     rpc CheckForCampaign (VucmCampaignCall) returns (VucmCampaignReply);
     rpc GetCampaignStatus (VucmStatusCall) returns (VucmStatusReply);
+    rpc Decide (VucmDecisionCall) returns (VucmDecisionReply);
 }
