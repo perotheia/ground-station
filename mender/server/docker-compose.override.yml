@@ -38,3 +38,18 @@ services:
       - --providers.docker.endpoint=tcp://dockerproxy:2375
     depends_on:
       - dockerproxy
+
+  # ── Trim: disable the services the Theia OTA wire never touches ──────────────
+  # Our flow uses exactly 4 API surfaces — useradm (login/PAT), deviceauth
+  # (enroll/accept), inventory (device groups), deployments (upload/deploy/status)
+  # — plus their datastore (mongo), bus (nats), artifact store (s3/seaweedfs) and
+  # gateway (traefik). The services below are NOT on that path: the web GUI (we
+  # drive the API), device-config / remote-terminal (deviceconfig, deviceconnect),
+  # and the IoT-hub integration. `scale: 0` keeps them defined (so traefik's static
+  # routes still resolve) but never starts OR PULLS them — ~150MB + 4 containers
+  # of RAM/CPU saved per run. (The qemu `client` is already scale:0 upstream — its
+  # 1.3GB image is never pulled.) Re-enable any with `docker compose up --scale gui=1`.
+  gui:           { scale: 0 }
+  deviceconfig:  { scale: 0 }
+  deviceconnect: { scale: 0 }
+  iot-manager:   { scale: 0 }
