@@ -35,19 +35,37 @@ services:
     networks:
       - mender
 
-  fleet-ops:
-    image: python:3.12-slim
-    container_name: gs-fleet-ops
-    working_dir: /gs
+  # The operator backend — FastAPI over the Mender Management API (deployments,
+  # devices, artifacts) + the MinIO distribution planes (runtime + app vendoring).
+  # Holds the Mender PAT + MinIO creds; the browser never sees them (it talks to
+  # gs-web → /api → here). Reuses ./fleet/fleet.py (the Mender client), mounted.
+  gs-api:
+    build: ./api
+    container_name: gs-api
     volumes:
-      - ./fleet:/gs/fleet:ro
-      - ./mender:/gs/mender:ro
-    # No heavy deps — fleet.py is urllib-only. Idle shell; operators exec in to
-    # run `python fleet/fleet.py <cmd>` against the GW. The web UX replaces this.
-    command: ["sleep", "infinity"]
+      - ./fleet:/gs/fleet:ro      # clients.py loads fleet.py (the Mender client)
     environment:
-      # Point fleet.py at the Mender GW (the up.sh server). Override per deploy.
-      MENDER_URL: "${MENDER_URL:-https://docker.mender.io}"
+      # The Mender GW (server DNS name on the mender network) + a PAT.
+      MENDER_SERVER: "${MENDER_SERVER:-https://mender-api-gateway}"
+      MENDER_TOKEN: "${MENDER_TOKEN:?set MENDER_TOKEN (a Mender PAT) in .env}"
+      MENDER_INSECURE: "${MENDER_INSECURE:-1}"
+      MENDER_FLAVOR: "${MENDER_FLAVOR:-oss}"
+      # The distribution planes (the gs-minio service above).
+      S3_ENDPOINT: "${S3_ENDPOINT:-http://gs-minio:9000}"
+      MINIO_USER: "${MINIO_USER:-theia}"
+      MINIO_PASSWORD: "${MINIO_PASSWORD:-theiaminio}"
+    networks:
+      - mender
+
+  # The operator web UI — the Mender-like fleet view + vendoring + monitoring.
+  # Static SPA served by nginx, which proxies /api → gs-api.
+  gs-web:
+    build: ./web
+    container_name: gs-web
+    ports:
+      - "${GS_WEB_PORT:-8088}:80"
+    depends_on:
+      - gs-api
     networks:
       - mender
 

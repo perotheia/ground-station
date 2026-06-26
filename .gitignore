@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ground-station web (Node)
+node_modules/
+web/dist/
