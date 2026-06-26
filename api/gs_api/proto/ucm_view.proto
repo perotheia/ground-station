@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+// ucm_view.proto — the SUBSET of services/com's supervisor_bridge.proto that GS
+// needs to drive + observe the on-device UCM agent over com gRPC (the ara::com
+// OTA-client edge). Kept in sync with the UcmView block in
+// theia/services/com/proto/supervisor_bridge.proto — same field numbers + the
+// SAME package `services.com` (so the wire service name matches com's server).
+//
+// GS is the OTA CLIENT in the ARA model: it lands bits via Mender, then drives
+// UCM's lifecycle (verify → SM-session → stop → install → activate → restart →
+// PHM-verify → ACTIVE/ROLLBACK) and watches the FSM via GetProgress.
+package services.com;
+
+message UcmRequestUpdateCall {
+    string name          = 1;   // "theia" (full) or an FC name (partial)
+    string version       = 2;
+    uint32 kind          = 3;   // 0=SOFTWARE 1=CONFIG
+    uint32 scope         = 4;   // 0=FULL 1=PARTIAL
+    string artifact_path = 5;
+    string signature     = 6;
+}
+message UcmRequestUpdateReply {
+    uint32 status = 1;          // 0=accepted 1=reject 2=not-ready
+}
+message UcmProgressReply {
+    uint32 state   = 1;         // UcmState: 0 IDLE..7 ACTIVE, 8 ROLLBACK
+    string version = 2;
+    uint32 kind    = 3;
+    uint32 scope   = 4;
+    string detail  = 5;
+    uint64 ts_ns   = 6;
+    bool   ok      = 7;
+}
+message UcmProgressCall { }
+
+service UcmView {
+    rpc RequestUpdate (UcmRequestUpdateCall) returns (UcmRequestUpdateReply);
+    rpc GetProgress (UcmProgressCall) returns (UcmProgressReply);
+}

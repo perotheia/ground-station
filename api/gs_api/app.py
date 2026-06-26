@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
-from .routers import deployments, devices, planes
+from .routers import deployments, devices, planes, ucm
 from .settings import settings
 
 
@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(devices.router)
     app.include_router(deployments.router)
     app.include_router(planes.router)
+    app.include_router(ucm.router)
     return app
 
 
