@@ -153,10 +153,19 @@ def _deployment_device_ids(m, dep_id: str, dep: dict) -> list[str]:
                 return ids
     except Exception:  # noqa: BLE001
         pass
-    # fallback: the fleet = the deployment's compatible device_type(s)
-    compat = dep.get("artifacts") or dep.get("device_types_compatible") or []
-    if isinstance(compat, str):
-        compat = [compat]
+    # fallback: the deployment's name encodes the fleet (theia-<artifact>-<fleet>),
+    # but simplest + robust — show every enrolled device whose device_type matches
+    # the deployment's compatible types. The artifact's compatibility is on the
+    # artifact, not the deployment dict, so resolve it; if that's unavailable, show
+    # all enrolled rigs (the deployment targeted the fleet).
+    compat: list[str] = []
+    for art_id in (dep.get("artifacts") or []):
+        try:
+            st, data, _ = m._req("GET", f"{m.art}/{art_id}")  # noqa: SLF001
+            if st == 200:
+                compat += json.loads(data or b"{}").get("device_types_compatible", [])
+        except Exception:  # noqa: BLE001
+            pass
     out = []
     for d in m.devices():
         dt = next((a["value"] for a in d.get("attributes", []) or []
