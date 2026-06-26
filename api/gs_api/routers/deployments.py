@@ -139,16 +139,32 @@ def rollout(dep_id: str) -> dict:
 
 
 def _deployment_device_ids(m, dep_id: str, dep: dict) -> list[str]:
-    """The device ids a deployment targets (from the deployment's device_count /
-    devices list — Mender's per-deployment device endpoint)."""
+    """The device ids a deployment targets. Mender's per-deployment /devices is only
+    populated once a device CHECKS IN for the deployment (poll interval), so for a
+    fresh/pending deployment it's empty. Fall back to the fleet (device_type from
+    the deployment's artifact compatibility) so the ECU plane shows the target rigs
+    immediately — the operator watches them even before they pick up the artifact."""
+    import json
     try:
         st, data, _ = m._req("GET", f"{m.dep}/{dep_id}/devices?per_page=100")  # noqa: SLF001
         if st == 200:
-            import json
-            return [d.get("id") for d in json.loads(data or b"[]") if d.get("id")]
+            ids = [d.get("id") for d in json.loads(data or b"[]") if d.get("id")]
+            if ids:
+                return ids
     except Exception:  # noqa: BLE001
         pass
-    return []
+    # fallback: the fleet = the deployment's compatible device_type(s)
+    compat = dep.get("artifacts") or dep.get("device_types_compatible") or []
+    if isinstance(compat, str):
+        compat = [compat]
+    out = []
+    for d in m.devices():
+        dt = next((a["value"] for a in d.get("attributes", []) or []
+                   if a["name"] == "device_type"), None)
+        dtv = dt[0] if isinstance(dt, list) and dt else dt
+        if not compat or dtv in compat:
+            out.append(d["id"])
+    return out
 
 
 def _com_endpoint(dev: dict | None) -> str | None:
