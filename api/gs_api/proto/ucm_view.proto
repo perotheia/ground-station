@@ -41,3 +41,32 @@ service UcmView {
     rpc RequestUpdate (UcmRequestUpdateCall) returns (UcmRequestUpdateReply);
     rpc GetProgress (UcmProgressCall) returns (UcmProgressReply);
 }
+
+// ---- L4-B: VucmView — the VEHICLE campaign (V-UCM on the coordinator board) --
+// In sync with the VucmView block in supervisor_bridge.proto. UcmView drives ONE
+// board; VucmView drives the campaign: V-UCM fans the package to every board's
+// UCM, holds CMP_CONFIRMING until ALL are PROVISIONAL (shared-etcd markers), then
+// fans the aggregate Confirm. GS drives the CAMPAIGN here.
+message VucmCampaignCall {
+    string campaign_id = 1;
+    string version     = 2;
+    uint32 scope       = 3;   // 0=FULL 1=PARTIAL
+}
+message VucmCampaignReply {
+    uint32 accepted = 1;      // 1 = queued
+    uint32 state    = 2;      // CampaignState ordinal (wire)
+}
+message VucmStatusCall { }
+message VucmStatusReply {
+    uint32 state       = 1;   // CampaignState: 0 IDLE..6 ROLLBACK, 7 CONFIRMING
+    string campaign_id = 2;
+    string version     = 3;
+    string detail      = 4;
+    uint64 ts_ns       = 5;
+    bool   valid       = 6;
+}
+
+service VucmView {
+    rpc CheckForCampaign (VucmCampaignCall) returns (VucmCampaignReply);
+    rpc GetCampaignStatus (VucmStatusCall) returns (VucmStatusReply);
+}

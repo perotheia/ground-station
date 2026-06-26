@@ -58,6 +58,10 @@ UCM_STATE = ["IDLE", "DOWNLOADED", "VALIDATED", "STAGED", "INSTALLING",
              "RESTARTING", "VERIFYING", "ACTIVE", "ROLLBACK"]
 # SmState ordinal → name (mirrors system_services_sm.SmState).
 SM_STATE = ["OFF", "STARTING", "RUNNING", "DEGRADED", "UPDATE", "SHUTDOWN"]
+# CampaignState ordinal → name (mirrors system_services_vucm.CampaignState; the
+# WIRE order: CONFIRMING is appended =7, so it's last not mid-list).
+CAMPAIGN_STATE = ["IDLE", "PLANNING", "AUTHORIZING", "INSTALLING", "VALIDATING",
+                  "DONE", "ROLLBACK", "CONFIRMING"]
 
 
 def request_update(target: str, name: str, version: str, *, kind: int = 0,
@@ -74,6 +78,40 @@ def request_update(target: str, name: str, version: str, *, kind: int = 0,
         rep = stub.RequestUpdate(req, timeout=timeout)
         return {"status": rep.status, "accepted": rep.status == 0,
                 "status_text": {0: "accepted", 1: "reject", 2: "not-ready"}.get(rep.status, "?")}
+
+
+def check_for_campaign(target: str, campaign_id: str, version: str, *,
+                       scope: int = 0, timeout: float = 10.0) -> dict:
+    """L4-B: start a VEHICLE campaign on the coordinator board at <target> (host:7700).
+    V-UCM fans the package to every board's UCM + holds CMP_CONFIRMING until ALL are
+    PROVISIONAL, then fans the aggregate Confirm. Returns {accepted, state}."""
+    _ensure_stubs()
+    with _channel(target) as ch:
+        stub = _pbg.VucmViewStub(ch)
+        req = _pb.VucmCampaignCall(campaign_id=campaign_id, version=version, scope=scope)
+        rep = stub.CheckForCampaign(req, timeout=timeout)
+        return {"accepted": rep.accepted == 1, "state": rep.state,
+                "state_name": CAMPAIGN_STATE[rep.state] if rep.state < len(CAMPAIGN_STATE)
+                              else str(rep.state)}
+
+
+def campaign_status(target: str, timeout: float = 8.0) -> dict:
+    """L4-B: the current vehicle CampaignProgress (the aggregate-barrier state) from
+    the coordinator board at <target>."""
+    _ensure_stubs()
+    with _channel(target) as ch:
+        stub = _pbg.VucmViewStub(ch)
+        s = stub.GetCampaignStatus(_pb.VucmStatusCall(), timeout=timeout)
+        return {
+            "valid": s.valid,
+            "state": s.state,
+            "state_name": CAMPAIGN_STATE[s.state] if s.state < len(CAMPAIGN_STATE)
+                          else str(s.state),
+            "campaign_id": s.campaign_id,
+            "version": s.version,
+            "detail": s.detail,
+            "ts_ns": s.ts_ns,
+        }
 
 
 def get_progress(target: str, timeout: float = 8.0) -> dict:
