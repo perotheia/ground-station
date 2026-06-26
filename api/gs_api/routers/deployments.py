@@ -6,10 +6,11 @@ group is resolved to its devices here (the v1 API takes a device list).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..clients import mender_client
+from ..auth import require_key
+from ..clients import mender_client, resolve_fleet
 from ..settings import settings
 
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
@@ -54,26 +55,34 @@ def artifacts() -> dict:
 
 class DeployRequest(BaseModel):
     artifact_name: str
-    group: str
+    # Target EITHER a fleet (device_type — the default, device-by-device) OR a
+    # Mender group. Exactly one is used; fleet wins if both are set.
+    fleet: str | None = None
+    group: str | None = None
     name: str | None = None
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_key)])
 def create_deployment(req: DeployRequest) -> dict:
-    """Roll out <artifact_name> to every device in <group> (the Mender device-group
-    = the hardware-capability fleet). Returns the new deployment id."""
+    """Roll out <artifact_name> to a fleet (device_type, device-by-device) or a
+    Mender group. Returns the new deployment id. Mutating → X-GS-Key gated."""
     s = settings()
     m = mender_client(s)
+    target = req.fleet or req.group
+    if not target:
+        raise HTTPException(status_code=400, detail="need a fleet or group to target")
     try:
-        devices = m.device_ids_in_group(req.group)
+        devices = (resolve_fleet(m, req.fleet) if req.fleet
+                   else m.device_ids_in_group(req.group))
         if not devices:
             raise HTTPException(
                 status_code=400,
-                detail=f"no devices in group '{req.group}' (enrolled + grouped?)")
-        name = req.name or f"theia-{req.artifact_name}-{req.group}"
+                detail=f"no devices match {'fleet' if req.fleet else 'group'} "
+                       f"'{target}' (enrolled?)")
+        name = req.name or f"theia-{req.artifact_name}-{target}"
         dep_id = m.create_deployment(name, req.artifact_name, devices)
         return {"id": dep_id, "name": name, "devices": len(devices),
-                "group": req.group, "artifact_name": req.artifact_name}
+                "target": target, "artifact_name": req.artifact_name}
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001

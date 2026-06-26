@@ -32,6 +32,12 @@ class Settings:
 
     # ---- service ----
     cors_origins: str = os.environ.get("GS_CORS_ORIGINS", "*")
+    # API key gating the MUTATING routes (deploy / publish). When set, a caller
+    # (colony's first-install task, a remote operator) must present X-GS-Key. When
+    # empty, mutating routes are OPEN — fine for a localhost-only GS-host CLI, NOT
+    # for a network-exposed GS. The read routes (devices, planes, status) are always
+    # open (trusted network); only state-changing calls are gated.
+    api_key: str = os.environ.get("GS_API_KEY", "")
 
 
 def settings() -> Settings:

@@ -19,10 +19,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..clients import mender_client, plane_client
+from ..auth import require_key
+from ..clients import mender_client, plane_client, resolve_fleet
 from ..settings import settings
 
 router = APIRouter(prefix="/api/planes", tags=["planes"])
@@ -68,7 +69,7 @@ class PublishRequest(BaseModel):
     deployment_name: str | None = None
 
 
-@router.post("/apps/publish")
+@router.post("/apps/publish", dependencies=[Depends(require_key)])
 def publish_app(req: PublishRequest) -> dict:
     """Vendor an app version: pull its .mender from the app plane → upload to the
     Mender GW → (optionally) deploy to the app's fleet group. The one-click bridge
@@ -103,11 +104,12 @@ def publish_app(req: PublishRequest) -> dict:
               "upload": upload_note, "fleet": req.fleet}
     if req.deploy:
         try:
-            devices = m.device_ids_in_group(req.fleet)
+            # the fleet IS the device_type — resolve device-by-device (no groups)
+            devices = resolve_fleet(m, req.fleet)
             if not devices:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"no devices in fleet group '{req.fleet}'")
+                    detail=f"no devices in fleet '{req.fleet}' (device_type)")
             name = req.deployment_name or f"{artifact_name}-{req.fleet}"
             dep_id = m.create_deployment(name, artifact_name, devices)
             result["deployment"] = {"id": dep_id, "name": name,

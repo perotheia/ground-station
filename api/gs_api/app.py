@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
             "runtime_bucket": s.s3_runtime_bucket,
             "apps_bucket": s.s3_apps_bucket,
             "token_set": bool(s.mender_token),
+            "auth_required": bool(s.api_key),
         }
 
     app.include_router(devices.router)

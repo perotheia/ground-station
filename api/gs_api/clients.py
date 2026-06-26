@@ -38,6 +38,29 @@ def mender_client(s: Settings):
                   insecure=s.mender_insecure, flavor=s.mender_flavor)
 
 
+def _attr(dev: dict, name: str):
+    for a in dev.get("attributes", []) or []:
+        if a["name"] == name:
+            v = a["value"]
+            return v[0] if isinstance(v, list) and v else v
+    return None
+
+
+def resolve_fleet(m, fleet: str) -> list[str]:
+    """A FLEET is a hardware-capability class == the Mender device_type. We deploy
+    device-by-device (no Mender groups): resolve the fleet to the ids of every
+    enrolled device whose device_type matches. The deployment API takes a device
+    list, so this is the targeting primitive for both first-install + increments."""
+    out = []
+    for d in m.devices():
+        dt = _attr(d, "device_type")
+        # device_type can repeat across scopes; match if any value equals the fleet
+        vals = dt if isinstance(dt, list) else [dt]
+        if fleet in [str(x) for x in (vals or [])] or dt == fleet:
+            out.append(d["id"])
+    return out
+
+
 # ---- MinIO distribution planes (S3) -------------------------------------------
 # boto3 is the only heavy dep; isolate it so the rest of the API imports without it.
 class PlaneClient:
