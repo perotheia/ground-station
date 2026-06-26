@@ -33,8 +33,12 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Pack the release tree + a version marker (the module reads version.txt).
 echo "$VER" > "$WORK/version.txt"
-# zstd if available (smaller), else gzip.
-if command -v zstd >/dev/null; then
+# Compression: GZIP by default (the portable choice). The theia-release module
+# can unpack zstd too, but a field rig may not HAVE zstd (and can't apt-install it
+# offline) — a zstd artifact then fails to untar and the install rolls back. gzip
+# is universally present. Opt into zstd (smaller) only when you know every target
+# board has it: ARTIFACT_COMPRESS=zstd build-artifact.sh ...
+if [ "${ARTIFACT_COMPRESS:-gzip}" = "zstd" ] && command -v zstd >/dev/null; then
     tar -C "$RELDIR" -cf - . | zstd -q -o "$WORK/release.tar.zst"
     PAYLOAD="$WORK/release.tar.zst"
 else
