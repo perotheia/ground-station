@@ -33,7 +33,19 @@ ADMIN_EMAIL="${4:-admin@docker.mender.io}"
 ADMIN_PASS="${5:-password123}"
 BASE="https://$SERVER_IP"
 
-echo "[enroll] $RIG → $SERVER_HOST ($SERVER_IP)"
+# Rig transport: SSH (default — $RIG is an ssh target) or docker exec (set
+# RIG_EXEC=docker and $RIG = the container name — the containerized/CI path, where
+# the board has no sshd). rig_sh runs a shell on the rig; rig_cp copies a file in.
+RIG_EXEC="${RIG_EXEC:-ssh}"
+if [ "$RIG_EXEC" = "docker" ]; then
+    rig_sh() { docker exec -i "$RIG" "$@"; }
+    rig_cp() { docker cp "$1" "$RIG:$2"; }
+else
+    rig_sh() { ssh "$RIG" "$@"; }
+    rig_cp() { scp "$1" "$RIG:$2" >/dev/null; }
+fi
+
+echo "[enroll] $RIG → $SERVER_HOST ($SERVER_IP) [transport=$RIG_EXEC]"
 
 # --- 1. fetch the server CA (self-signed cert == its own CA) ---
 # Two ways to get it:
@@ -51,8 +63,8 @@ fi
 [ -s "$ca" ] || { echo "could not get server CA (set SERVER_CA=<file> or SERVER_SSH=<host>)"; exit 1; }
 
 # --- 2-4. ship CA + hosts + mender.conf + identity/inventory to the rig ---
-scp "$ca" "$RIG:/tmp/mender-server-ca.crt" >/dev/null
-ssh "$RIG" "sudo sh -s" <<EOF
+rig_cp "$ca" /tmp/mender-server-ca.crt
+rig_sh sh -s <<EOF
 set -e
 grep -q "$SERVER_HOST" /etc/hosts || echo "$SERVER_IP $SERVER_HOST s3.$SERVER_HOST" >> /etc/hosts
 install -d -m0755 /etc/mender
@@ -93,7 +105,7 @@ EOF
 # Debian's mender-client 3.4.0 can't pull from server v4.0.1. Install the 4.x
 # stack via Mender's official repo script (publishes +debian+trixie arm64 pkgs).
 echo "[enroll] installing the 4.x mender-update client"
-ssh "$RIG" 'set -e
+rig_sh sh -c 'set -e
   if ! command -v mender-update >/dev/null 2>&1; then
     curl -fsSL https://get.mender.io -o /tmp/get-mender.sh
     sudo bash /tmp/get-mender.sh mender-update mender-auth
@@ -107,8 +119,8 @@ ssh "$RIG" 'set -e
 BASELINE_ARTIFACT="${4:-}"
 if [ -n "$BASELINE_ARTIFACT" ] && [ -f "$BASELINE_ARTIFACT" ]; then
     echo "[enroll] seeding baseline artifact $(basename "$BASELINE_ARTIFACT")"
-    scp "$BASELINE_ARTIFACT" "$RIG:/tmp/baseline.mender" >/dev/null
-    ssh "$RIG" 'sudo install -d -m0755 /opt/theia
+    rig_cp "$BASELINE_ARTIFACT" /tmp/baseline.mender
+    rig_sh sh -c 'install -d -m0755 /opt/theia
                 sudo mender-update install /tmp/baseline.mender >/dev/null 2>&1 || true
                 sudo mender-update commit >/dev/null 2>&1 || true'
 fi
@@ -127,7 +139,7 @@ _api() {  # METHOD PATH [DATA]
 
 # --- 6. start the 4.x daemons → submit auth request ---
 echo "[enroll] starting mender-authd + mender-updated (submits the auth request)"
-ssh "$RIG" 'sudo systemctl restart mender-authd; sleep 3; sudo systemctl restart mender-updated'
+rig_sh sh -c 'systemctl restart mender-authd; sleep 3; systemctl restart mender-updated'
 
 # --- 7. accept the device via the device-auth API. POLL for it to appear PENDING
 #        instead of a fixed sleep (the old `sleep 8` raced the client's auth
@@ -155,7 +167,7 @@ echo "[enroll] accepting device $dev (auth set $aset)"
 _api PUT "/api/management/v2/devauth/devices/$dev/auth/$aset/status" '{"status":"accepted"}'
 
 # --- 8. restart → authorize + submit inventory + poll for deployments ---
-ssh "$RIG" 'sudo systemctl restart mender-authd; sleep 3; sudo systemctl restart mender-updated'
+rig_sh sh -c 'systemctl restart mender-authd; sleep 3; systemctl restart mender-updated'
 echo "[enroll] done. $RIG is accepted; it reports inventory + polls for deployments."
 echo "[enroll] confirm in the UI: $BASE  ($ADMIN_EMAIL)"
 echo "[enroll] deploy:  fleet/fleet.py --insecure deploy <artifact> <group>"
