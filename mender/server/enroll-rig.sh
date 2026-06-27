@@ -82,11 +82,17 @@ cat > /etc/mender/mender.conf <<CONF
 }
 CONF
 install -d -m0755 /usr/share/mender/identity /usr/share/mender/inventory
-cat > /usr/share/mender/identity/mender-device-identity <<'ID'
-#!/bin/sh
-mac=\$(cat /sys/class/net/eth0/address 2>/dev/null || cat /sys/class/net/*/address 2>/dev/null | head -1)
-echo "mac=\$mac"
-ID
+# Device identity. The DEVICE_ID override (e.g. the board name) is baked into a file
+# the identity script reads; it wins over the eth0 MAC. This matters when several
+# rigs share a MAC — host-networked test containers all see the host's NICs, so the
+# MAC is identical and Mender would collapse them into ONE device; the board name
+# keeps them distinct. \$DEVICE_ID expands in the CONTROLLER's shell (outer EOF).
+echo "${DEVICE_ID:-}" > /etc/mender/device-id
+# Identity script — written with printf (NO nested heredoc; those re-expand on the
+# board inside the outer EOF and mangle the \$). %s slots are escaped \$ → literal \$
+# on the board. Reads the baked device-id (a DEVICE_ID override), falls back to the
+# eth0 MAC. (The %% are literal % for printf.)
+printf '#!/bin/sh\ndid="\$(cat /etc/mender/device-id 2>/dev/null)"\n[ -n "\$did" ] || did="\$(cat /sys/class/net/eth0/address 2>/dev/null || cat /sys/class/net/*/address 2>/dev/null | head -1)"\necho "device=\$did"\n' > /usr/share/mender/identity/mender-device-identity
 chmod 755 /usr/share/mender/identity/mender-device-identity
 cat > /usr/share/mender/inventory/mender-inventory-theia <<'INV'
 #!/bin/sh

@@ -220,3 +220,4 @@ __marimo__/
 # ground-station web (Node)
 node_modules/
 web/dist/
+.srv-ca.crt
