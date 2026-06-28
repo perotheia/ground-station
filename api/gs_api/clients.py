@@ -46,6 +46,17 @@ def _attr(dev: dict, name: str):
     return None
 
 
+def _attr_raw(dev: dict, name: str):
+    """The attribute value WITHOUT collapsing a multi-value list to its first
+    element (unlike _attr). device_type often repeats across inventory scopes
+    (e.g. ['theia-rig', 'theia-gateway']); fleet matching must see EVERY value,
+    or a board that gained a second device_type is invisible to the new fleet."""
+    for a in dev.get("attributes", []) or []:
+        if a["name"] == name:
+            return a["value"]
+    return None
+
+
 def resolve_fleet(m, fleet: str) -> list[str]:
     """A FLEET is a hardware-capability class == the Mender device_type. We deploy
     device-by-device (no Mender groups): resolve the fleet to the ids of every
@@ -53,7 +64,7 @@ def resolve_fleet(m, fleet: str) -> list[str]:
     list, so this is the targeting primitive for both first-install + increments."""
     out = []
     for d in m.devices():
-        dt = _attr(d, "device_type")
+        dt = _attr_raw(d, "device_type")   # raw — keep ALL device_type values
         # device_type can repeat across scopes; match if any value equals the fleet
         vals = dt if isinstance(dt, list) else [dt]
         if fleet in [str(x) for x in (vals or [])] or dt == fleet:
