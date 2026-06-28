@@ -17,6 +17,7 @@ each links its design.
   - [x] P2 — base-state mirror + merged deployments ✓ CHECKPOINT passed (rpi4 Mender tags base_version=0.2.2; 1 base + 16 app in one list)
   - [ ] P3 — Fleet panel: status dots, group, Connect, merged timeline
   - [x] P4 — Deploy board (modern UF 3-col dashboard, route-by-release-type, runtime-compat gate) ✓ LIVE dalek:8090
+  - [x] P4b — arity-1 Assign (Assigned tab, in-context, compat-gated) + zero-arity Cleanup (🧹 row action, inline confirm = colony cleanup) ✓ LIVE
   - [x] P5 — Releases catalog (runtime↔app DEPENDENCY graph, no-backward-compat gate) ✓
   - [ ] P5b — Releases: lock state + role plane
   - [ ] P6 — Rollouts (phased-by-group; no thresholds)
