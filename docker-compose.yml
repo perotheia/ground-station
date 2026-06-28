@@ -101,6 +101,10 @@ services:
     container_name: gs-web
     ports:
       - "${GS_WEB_PORT:-8088}:80"
+    environment:
+      # injected into the /api proxy as X-GS-Key so the trusted operator browser
+      # can call the mutating routes without ever carrying the key client-side.
+      GS_API_KEY: "${GS_API_KEY:-}"
     depends_on:
       - gs-api
     networks:
