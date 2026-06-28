@@ -12,7 +12,7 @@ each links its design.
   Scope cuts: no MFA / user-management / big-fleet rollout thresholds.
   **Plan (phased, with checkpoints):** [design/gs-ux-plan.md](design/gs-ux-plan.md).
   - [x] P0 — colony-api ✓ CHECKPOINT passed (dockerized, live-verified rpi4) (dockerized, Mender-shaped: `/rigs`, `/deployments`)
-  - [ ] P1 — Connect Device (com + Mender accept, by MAC)
+  - [x] P1 — Connect Device ✓ CHECKPOINT passed (live accept-by-MAC; Mender-visible; com-half degrades on old runtime)
   - [ ] P2 — base-state mirror into Mender inventory (Mender UX reflects colony)
   - [ ] P3 — Fleet panel: status dots, group, Connect, merged timeline
   - [ ] P4 — Deploy board (3-col, route-by-release-type, Confirm dialog)
