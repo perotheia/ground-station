@@ -73,19 +73,20 @@ def list_devices(group: str | None = Query(default=None)) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"mender inventory: {e}")
     devices = [_flatten(d) for d in raw]
-    # ── connected tri-state: cross-reference Mender (accepted) with the
-    #    Observability cluster (ListMachines). mender+com=green, mender-only=health
-    #    gap, (com-only boards aren't in Mender inventory → see /pending). ────────
-    observed = _observed()              # machine name → present
+    # ── connected state: cross-reference Mender (accepted) with the Observability
+    #    cluster (ListMachines). Two states, no can't-tell — the whole fleet runs
+    #    ListMachines: mender+com (present in the cluster) or mender-only (accepted
+    #    but the supervisor isn't published — a real health gap). (com-only boards
+    #    aren't in Mender inventory → they surface via /pending.) ────────────────
+    observed = _observed()              # machine name → present (raises 502 on fault)
     for d in devices:
-        # match a Mender device to a cluster machine by name where possible; a
-        # board with NO matching present machine is mender-only (a health gap).
-        name = (d.get("name") or "").lower()
-        in_cluster = any(present and (mn.lower() in name or name in mn.lower())
-                         for mn, present in observed.items()) if observed else None
-        d["connected"] = ("mender+com" if in_cluster
-                          else "mender-only" if observed
-                          else "mender")     # observed empty → can't tell
+        # match a Mender device to a cluster machine. Prefer an explicit
+        # `machine`/`theia_machine` inventory attr; fall back to a name match.
+        mach = (d.get("machine") or d.get("name") or "").lower()
+        in_cluster = any(present and (mn.lower() == mach
+                                      or mn.lower() in mach or mach in mn.lower())
+                         for mn, present in observed.items())
+        d["connected"] = "mender+com" if in_cluster else "mender-only"
     # group rollup for the UI's fleet selector
     fleets: dict[str, int] = {}
     for d in devices:
@@ -101,17 +102,19 @@ def list_devices(group: str | None = Query(default=None)) -> dict:
 # path; nothing is connected until both are true. See docs/design/gs-ux-design.md §4.
 
 def _observed() -> dict[str, bool]:
-    """machine name → present, from the com aggregator's ListMachines. {} if the
-    aggregator is unreachable OR the deployed com predates ListMachines
-    (UNIMPLEMENTED) — Observability presence is then simply unknown, never fatal
-    for Mender ops. The tri-state degrades to 'mender' (can't-tell) in that case."""
+    """machine name → present, from the com aggregator's ListMachines. The whole
+    fleet runs a runtime with ListMachines (no degrade) — so a failure here is a
+    REAL fault (aggregator down / wrong endpoint), surfaced as 502, not silently
+    swallowed. The two-state cluster membership is authoritative."""
     try:
         return {m["name"]: m["present"]
                 for m in com_client.list_machines(_aggregator())}
-    except Exception:  # noqa: BLE001
-        # grpc UNIMPLEMENTED (old runtime) / UNAVAILABLE (aggregator down) /
-        # any transport error → Observability blind; Mender side is unaffected.
-        return {}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"ListMachines @ {_aggregator()} failed: {e}. The Observability "
+                   "aggregator must be reachable (the fleet runs ListMachines "
+                   "everywhere — no degrade).")
 
 
 @router.get("/pending")
