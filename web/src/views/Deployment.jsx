@@ -19,11 +19,39 @@ function StatusDot({ s }) {
   return <span title={t} className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: c }} />
 }
 
+// Inline confirm bubble for a row-level destructive action (no modal).
+function RowConfirm({ label, onYes, onNo }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px]">
+      <span className="text-muted">{label}?</span>
+      <button className="text-ok hover:underline" onClick={(e) => { e.stopPropagation(); onYes() }}>Yes</button>
+      <button className="text-danger hover:underline" onClick={(e) => { e.stopPropagation(); onNo() }}>No</button>
+    </span>
+  )
+}
+
 // ── Column 1: Targets (devices) ─────────────────────────────────────────────
-function Targets({ sel, setSel }) {
-  const { data, loading } = usePoll(() => api.devices(), [], 6000)
+function Targets({ sel, setSel, onAssigned }) {
+  const { data, loading, refresh } = usePoll(() => api.devices(), [], 6000)
   const devices = data?.devices || []
   const selDev = devices.find((d) => d.id === sel)
+  const [confirm, setConfirm] = useState(null)   // device id awaiting cleanup confirm
+  const [busy, setBusy] = useState(null)
+  const [note, setNote] = useState(null)
+
+  // zero-arity Cleanup: keep the device enrolled, remove its software
+  // (= colony cleanup <rig>). The rig is the device's machine tag (central/…).
+  const cleanup = async (d) => {
+    const rig = d.attributes?.machine || d.name
+    setBusy(d.id); setConfirm(null); setNote(null)
+    try {
+      const r = await api.deployBase(rig, 'cleanup')
+      setNote(`cleanup ${rig}: ${r.ok ? 'ok' : 'failed'}`)
+      refresh()
+    } catch (e) { setNote(`cleanup error: ${e.message}`) }
+    setBusy(null)
+  }
+
   return (
     <div className="pane min-h-0">
       <div className="pane-head">
@@ -37,10 +65,10 @@ function Targets({ sel, setSel }) {
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
-            <tr><th className="th">Name</th><th className="th">Base</th><th className="th">App</th><th className="th">St</th></tr>
+            <tr><th className="th">Name</th><th className="th">Base</th><th className="th">App</th><th className="th">St</th><th className="th"></th></tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
-            {loading && <tr><td className="cell text-muted" colSpan={4}>loading…</td></tr>}
+            {loading && <tr><td className="cell text-muted" colSpan={5}>loading…</td></tr>}
             {devices.map((d) => (
               <tr key={d.id} onClick={() => setSel(d.id)}
                   className={`cursor-pointer hover:bg-edge/20 ${sel === d.id ? 'row-sel' : ''}`}>
@@ -48,24 +76,24 @@ function Targets({ sel, setSel }) {
                 <td className="cell text-xs text-muted">{d.base_version || '—'}</td>
                 <td className="cell text-xs text-muted">{d.artifact || '—'}</td>
                 <td className="cell"><StatusDot s={d.connected} /></td>
+                <td className="cell text-right whitespace-nowrap">
+                  {confirm === d.id
+                    ? <RowConfirm label="cleanup" onYes={() => cleanup(d)} onNo={() => setConfirm(null)} />
+                    : <button title="cleanup (keep enrolled, remove software)"
+                              className="icon-btn"
+                              disabled={busy === d.id}
+                              onClick={(e) => { e.stopPropagation(); setConfirm(d.id) }}>
+                        {busy === d.id ? '…' : '🧹'}
+                      </button>}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      {/* Target details (bottom pane) */}
-      <div className="border-t border-edge bg-sidebar/30 p-3 text-xs">
-        {selDev ? (
-          <div className="space-y-1">
-            <div className="font-semibold text-slate-100">{selDev.name || selDev.id.slice(0, 12)}</div>
-            <Kv k="Controller Id" v={selDev.id} mono />
-            <Kv k="Fleet (type)" v={selDev.fleet} />
-            <Kv k="Base runtime" v={selDev.base_version || '— (no colony deploy yet)'} />
-            <Kv k="App" v={selDev.artifact || '—'} />
-            <Kv k="Connected" v={selDev.connected} />
-          </div>
-        ) : <div className="text-muted">Select a target to see details.</div>}
-      </div>
+      {note && <div className="px-3 py-1 text-[11px] text-slate-300 border-t border-edge">{note}</div>}
+      {/* Target details (bottom pane) — tabbed Master-Detail (Details | Assigned) */}
+      <TargetDetails dev={selDev} onAssigned={() => { refresh(); onAssigned && onAssigned() }} />
       <div className="px-3 py-1.5 border-t border-edge text-[11px] text-muted">
         Total Targets: {devices.length}
       </div>
@@ -78,6 +106,97 @@ function Kv({ k, v, mono }) {
     <div className="flex gap-2">
       <span className="text-muted w-28 shrink-0">{k}</span>
       <span className={mono ? 'font-mono text-slate-300 break-all' : 'text-slate-300'}>{v}</span>
+    </div>
+  )
+}
+
+// The bottom Target-Details pane: a tab bar (Details | Assigned) — the in-context
+// Master-Detail arity-1 workflow. The Assigned tab applies a distribution without
+// a modal, with the runtime-compat gate enforced inline.
+function TargetDetails({ dev, onAssigned }) {
+  const [tab, setTab] = useState('details')
+  if (!dev) return (
+    <div className="border-t border-edge bg-sidebar/30 p-3 text-xs text-muted">Select a target to see details.</div>
+  )
+  return (
+    <div className="border-t border-edge bg-sidebar/30 text-xs">
+      <div className="flex items-center gap-1 px-3 pt-2">
+        <span className="font-semibold text-slate-100 mr-2">{dev.name || dev.id.slice(0, 12)}</span>
+        <span className={`tab ${tab === 'details' ? 'tab-active' : ''}`} onClick={() => setTab('details')}>Details</span>
+        <span className={`tab ${tab === 'assigned' ? 'tab-active' : ''}`} onClick={() => setTab('assigned')}>Assigned</span>
+      </div>
+      <div className="p-3">
+        {tab === 'details' ? (
+          <div className="space-y-1">
+            <Kv k="Controller Id" v={dev.id} mono />
+            <Kv k="Fleet (type)" v={dev.fleet} />
+            <Kv k="Base runtime" v={dev.base_version || '— (no colony deploy yet)'} />
+            <Kv k="App" v={dev.artifact || '—'} />
+            <Kv k="Connected" v={dev.connected} />
+          </div>
+        ) : <AssignedTab dev={dev} onAssigned={onAssigned} />}
+      </div>
+    </div>
+  )
+}
+
+// The Assigned tab — shows what's on the device + an inline compat-aware picker.
+function AssignedTab({ dev, onAssigned }) {
+  const { data } = usePoll(() => api.appsPlane(), [], 8000)
+  const [pick, setPick] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+
+  // app distributions for THIS device's fleet, each tagged compatible/blocked vs
+  // the device's installed base_version (the runtime-compat gate, surfaced inline).
+  const choices = useMemo(() => {
+    const out = []
+    const byApp = (data?.tree || {})[dev.fleet] || {}
+    for (const [app, vers] of Object.entries(byApp)) {
+      for (const v of vers) {
+        const need = v.requires_runtime || ''
+        const compatible = !need || need === dev.base_version
+        out.push({ app, version: v.version, need, compatible,
+          label: `${app} ${v.version}`, value: `${app}:${v.version}` })
+      }
+    }
+    return out
+  }, [data, dev])
+
+  const assign = async () => {
+    const c = choices.find((x) => x.value === pick)
+    if (!c) return
+    setBusy(true); setMsg(null)
+    try {
+      const r = await api.publishApp(dev.fleet, c.app, c.version, true)
+      setMsg(r.deployment ? `assigned ${r.artifact_name} → ${r.deployment.devices} device(s)` : (r.detail || r.upload || 'done'))
+      onAssigned && onAssigned()
+    } catch (e) { setMsg(`blocked: ${e.message}`) }
+    setBusy(false)
+  }
+
+  const picked = choices.find((x) => x.value === pick)
+  return (
+    <div className="space-y-2">
+      <div className="text-muted">Currently: <span className="text-slate-300">{dev.artifact || 'no app'}</span> on base <span className="font-mono text-slate-300">{dev.base_version || '—'}</span></div>
+      <div className="flex items-center gap-2">
+        <select value={pick} onChange={(e) => setPick(e.target.value)}
+                className="bg-ink border border-edge rounded px-2 py-1 text-xs flex-1">
+          <option value="">Select a distribution to apply…</option>
+          {choices.map((c) => (
+            <option key={c.value} value={c.value} disabled={!c.compatible}>
+              {c.label}{c.compatible ? '' : ` — needs ${c.need}`}
+            </option>
+          ))}
+        </select>
+        <button className="btn" disabled={busy || !picked || !picked.compatible} onClick={assign}>
+          {busy ? '…' : 'Assign'}
+        </button>
+      </div>
+      {picked && !picked.compatible && (
+        <div className="text-danger text-[11px]">Incompatible: needs base {picked.need}, device runs {dev.base_version || '—'}. Update the base first.</div>
+      )}
+      {msg && <div className="text-[11px] text-slate-300">{msg}</div>}
     </div>
   )
 }
