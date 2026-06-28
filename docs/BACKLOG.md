@@ -12,6 +12,7 @@ each links its design.
   Scope cuts: no MFA / user-management / big-fleet rollout thresholds.
   **Plan (phased, with checkpoints):** [design/gs-ux-plan.md](design/gs-ux-plan.md).
   - [x] P0 — colony-api ✓ CHECKPOINT passed (dockerized, live-verified rpi4) (dockerized, Mender-shaped: `/rigs`, `/deployments`)
+  - [x] Runtime 0.2.2-bookworm-arm64 (com HAS ListMachines) → rpi4 reprovisioned from S3, ListMachines live; com-half degrade REMOVED (no fallback). JETSON still on old runtime — rebuild focal-arm64 + reprovision when it rejoins the cluster.
   - [x] P1 — Connect Device ✓ CHECKPOINT passed (live accept-by-MAC; Mender-visible; com-half degrades on old runtime)
   - [ ] P2 — base-state mirror into Mender inventory (Mender UX reflects colony)
   - [ ] P3 — Fleet panel: status dots, group, Connect, merged timeline
