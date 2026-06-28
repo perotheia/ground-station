@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from .. import com_client
 from ..auth import require_key
 from ..clients import mender_client, resolve_fleet
+from ..colony_client import colony_client
 from ..settings import settings
 
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
@@ -19,18 +20,41 @@ router = APIRouter(prefix="/api/deployments", tags=["deployments"])
 
 @router.get("")
 def list_deployments() -> dict:
-    """All deployments (the rollout history). Mender returns newest-first."""
+    """The UNIFIED rollout history — Mender (APP) deployments + colony (BASE)
+    deployments, merged into one newest-first list, each row authority-tagged
+    (`base`|`app`). The operator's one surface for two authorities (design §6).
+    A source that errors is reported but doesn't sink the other."""
+    import json
     s = settings()
-    m = mender_client(s)
+    rows: list[dict] = []
+    errors: dict[str, str] = {}
+
+    # ── APP plane: Mender deployments ────────────────────────────────────────
     try:
-        # the deployments list endpoint shares the dep base
+        m = mender_client(s)
         st, data, _ = m._req("GET", f"{m.dep}?per_page=100")  # noqa: SLF001
         if st != 200:
             raise RuntimeError(f"[{st}] {data.decode(errors='replace')[:200]}")
-        import json
-        return {"deployments": json.loads(data or b"[]")}
+        for d in json.loads(data or b"[]"):
+            d["authority"] = "app"
+            rows.append(d)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"mender deployments: {e}")
+        errors["app"] = str(e)
+
+    # ── BASE plane: colony-api deployments ───────────────────────────────────
+    try:
+        for d in colony_client(s).deployments():
+            d["authority"] = "base"   # colony rows already carry statistics.status
+            rows.append(d)
+    except Exception as e:  # noqa: BLE001
+        errors["base"] = str(e)
+
+    rows.sort(key=lambda d: str(d.get("created") or d.get("created_ts") or 0),
+              reverse=True)
+    out: dict = {"deployments": rows, "count": len(rows)}
+    if errors:
+        out["errors"] = errors
+    return out
 
 
 @router.get("/{dep_id}")
@@ -52,6 +76,108 @@ def artifacts() -> dict:
         return {"artifacts": mender_client(s).list_artifacts()}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"mender artifacts: {e}")
+
+
+# ── BASE deployment (colony) + the base-state mirror into Mender ─────────────
+def _mender_device_for_rig(s, m, rig: str) -> dict | None:
+    """Map a colony rig → its Mender device for the base-state mirror. The robust
+    key is the rig's `ansible_host` IP (registry) matched against the device's
+    reported ipv4_* (the rpi4 reports hostname=raspberrypi, NOT the rig name
+    'central', so a name match alone fails). Hostname/name match is the fallback."""
+    rig_ip = None
+    try:
+        rinfo = next((r for r in colony_client(s).rigs() if r.get("name") == rig), {})
+        rig_ip = str(rinfo.get("ansible_host") or "")
+    except Exception:  # noqa: BLE001
+        pass
+    rigl = rig.lower()
+    for d in m.devices():
+        attrs = {a["name"]: (a["value"][0] if isinstance(a["value"], list) and a["value"]
+                             else a["value"]) for a in d.get("attributes", []) or []}
+        # by IP (authoritative): any ipv4_* attr whose address equals the rig host
+        if rig_ip:
+            for k, v in attrs.items():
+                if k.startswith("ipv4") and str(v).split("/")[0] == rig_ip:
+                    return d
+        # by name/hostname (fallback)
+        cand = str(attrs.get("machine") or attrs.get("hostname")
+                   or attrs.get("name") or "").lower()
+        if cand and (cand == rigl or rigl in cand or cand in rigl):
+            return d
+    return None
+
+
+class BaseDeployRequest(BaseModel):
+    rig: str
+    kind: str = "orchestrate"        # provision | orchestrate
+    schedule: float | None = None
+    mirror: bool = True              # write the base-state tags on finish
+
+
+@router.post("/base", dependencies=[Depends(require_key)])
+def deploy_base(req: BaseDeployRequest) -> dict:
+    """Run a BASE deployment via colony-api, then MIRROR the result into the rig's
+    Mender device tags (base_version / base_authority=colony / base_deployed_at) so
+    Mender UX reflects what colony drove (design §5). Synchronous for a lab fleet:
+    trigger → poll-to-finish → mirror. A scheduled deploy returns immediately (the
+    mirror then happens on a later /base/{id}/mirror or the next poll)."""
+    import time
+    s = settings()
+    col = colony_client(s)
+    dep = col.create(req.rig, req.kind, req.schedule)
+    did = dep["id"]
+    if req.schedule:          # future-dated → don't block; mirror later
+        return {"deployment": dep, "mirrored": False, "note": "scheduled; mirror on finish"}
+    # poll to finish (orchestrate ~60s; cap a few minutes)
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        dep = col.deployment(did)
+        if dep.get("status") == "finished":
+            break
+        time.sleep(3)
+    stats = (dep.get("statistics") or {}).get("status", {})
+    ok = stats.get("success", 0) > 0 and stats.get("failure", 0) == 0
+    mirrored = False
+    if req.mirror and ok:
+        mirrored = _mirror_base_state(s, req.rig, dep)
+    return {"deployment": dep, "ok": ok, "mirrored": mirrored}
+
+
+def _mirror_base_state(s, rig: str, dep: dict) -> bool:
+    """Write the base-state tags onto the rig's Mender device. The version is the
+    rig's runtime_version (the release colony staged); authority is always colony."""
+    import time
+    m = mender_client(s)
+    dev = _mender_device_for_rig(s, m, rig)
+    if not dev:
+        return False
+    # the runtime_version the rig pulled — from colony-api's rig registry
+    ver = "unknown"
+    try:
+        rinfo = next((r for r in colony_client(s).rigs() if r.get("name") == rig), {})
+        ver = rinfo.get("runtime_version") or "unknown"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        m.set_tags(dev["id"], {
+            "base_version": ver,
+            "base_authority": "colony",
+            "base_kind": dep.get("kind", "orchestrate"),
+            "base_deployed_at": str(int(time.time())),
+            "base_status": "success",
+        })
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@router.post("/base/{did}/mirror", dependencies=[Depends(require_key)])
+def mirror_base(did: str, rig: str) -> dict:
+    """Mirror a (already-finished) colony deployment's base-state into Mender tags.
+    Used for scheduled deploys whose finish wasn't awaited inline."""
+    s = settings()
+    dep = colony_client(s).deployment(did)
+    return {"mirrored": _mirror_base_state(s, rig, dep), "deployment_id": did}
 
 
 class DeployRequest(BaseModel):

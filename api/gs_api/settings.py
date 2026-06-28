@@ -30,6 +30,14 @@ class Settings:
     s3_runtime_bucket: str = os.environ.get("S3_RUNTIME_BUCKET", "theia-runtime")
     s3_apps_bucket: str = os.environ.get("S3_APPS_BUCKET", "theia-apps")
 
+    # ---- colony-api (the BASE deployment authority) ----
+    # gs-api fans /api/deployments out to BOTH Mender (app) and colony-api (base).
+    colony_api: str = os.environ.get("COLONY_API", "http://colony-api:8081")
+    colony_api_key: str = os.environ.get("COLONY_API_KEY", "")
+    # The com aggregator that answers ListMachines — the whole cluster's
+    # Observability presence + the base-state mirror's machine→device mapping.
+    com_aggregator: str = os.environ.get("GS_COM_AGGREGATOR", "10.0.0.99:7700")
+
     # ---- service ----
     cors_origins: str = os.environ.get("GS_CORS_ORIGINS", "*")
     # API key gating the MUTATING routes (deploy / publish). When set, a caller

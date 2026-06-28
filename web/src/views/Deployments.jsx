@@ -15,6 +15,22 @@ function StatusBadge({ status }) {
   return <span className={`badge ${STATUS_COLOR[status] || 'bg-slate-500/15 text-slate-300'}`}>{status}</span>
 }
 
+// Mender 'created' is an ISO string; colony's is a unix ts (number). Render both.
+function fmtCreated(c) {
+  if (c == null) return ''
+  if (typeof c === 'number') return new Date(c * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  return String(c).slice(0, 19).replace('T', ' ')
+}
+
+// authority chip — base (colony) vs app (Mender). The one surface, two authorities.
+function PlaneBadge({ authority }) {
+  const a = authority || 'app'
+  const cls = a === 'base'
+    ? 'bg-violet-500/15 text-violet-300'   // base = colony
+    : 'bg-cyan-500/15 text-cyan-300'        // app = Mender
+  return <span className={`badge ${cls}`}>{a}</span>
+}
+
 // a compact rollout bar from Mender's per-status statistics
 function RolloutBar({ stats }) {
   if (!stats) return null
@@ -60,6 +76,7 @@ export function Deployments() {
           <thead className="border-b border-edge bg-ink/40">
             <tr>
               <th className="th">Name</th>
+              <th className="th">Plane</th>
               <th className="th">Artifact</th>
               <th className="th">Status</th>
               <th className="th">Rollout</th>
@@ -68,17 +85,18 @@ export function Deployments() {
             </tr>
           </thead>
           <tbody className="divide-y divide-edge/60">
-            {loading && <tr><td className="cell text-muted" colSpan={6}>loading…</td></tr>}
+            {loading && <tr><td className="cell text-muted" colSpan={7}>loading…</td></tr>}
             {!loading && deps.length === 0 && (
-              <tr><td className="cell text-muted" colSpan={6}>no deployments yet</td></tr>
+              <tr><td className="cell text-muted" colSpan={7}>no deployments yet</td></tr>
             )}
             {deps.map((d) => (
               <tr key={d.id} className="hover:bg-ink/30">
                 <td className="cell font-medium">{d.name}</td>
+                <td className="cell"><PlaneBadge authority={d.authority} /></td>
                 <td className="cell"><span className="badge bg-slate-500/15 text-slate-300">{d.artifact_name}</span></td>
                 <td className="cell"><StatusBadge status={d.status} /></td>
                 <td className="cell"><RolloutBar stats={d.statistics?.status || d.stats} /></td>
-                <td className="cell text-muted text-xs">{(d.created || '').slice(0, 19).replace('T', ' ')}</td>
+                <td className="cell text-muted text-xs">{fmtCreated(d.created || d.created_ts)}</td>
                 <td className="cell"><button className="btn-ghost" onClick={() => setRolloutId(d.id)}>Rollout</button></td>
               </tr>
             ))}

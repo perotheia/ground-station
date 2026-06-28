@@ -57,6 +57,13 @@ services:
       # API key gating the mutating routes (deploy/publish). Unset → open (the
       # browser-only path); set it the moment a remote caller (CI, MCP) reaches in.
       GS_API_KEY: "${GS_API_KEY:-}"
+      # colony-api (the BASE deployment authority) — gs-api fans /api/deployments
+      # out to BOTH Mender (app) and this; the base-state mirror writes Mender tags.
+      COLONY_API: "${COLONY_API:-http://colony-api:8081}"
+      COLONY_API_KEY: "${COLONY_API_KEY:-}"
+      # The com aggregator answering ListMachines (cluster Observability presence +
+      # the base-state mirror's rig→device map). The central board's com.
+      GS_COM_AGGREGATOR: "${GS_COM_AGGREGATOR:-10.0.0.99:7700}"
     networks:
       - mender
 
