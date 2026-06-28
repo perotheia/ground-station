@@ -60,6 +60,33 @@ services:
     networks:
       - mender
 
+  # colony-api — the BASE deployment authority, dockerized + Mender-API-shaped.
+  # gs-api fans out to this + Mender so the operator drives both base (colony) and
+  # app (Mender) from one surface. Runs the SAME Ansible plays the colony CLI runs;
+  # needs the colony repo (playbooks + bin/colony), the workspace bundle (registry
+  # + dist/manifest), and an SSH key to reach the rigs — all mounted, read-only
+  # where possible. See ground-station/docs/design/gs-ux-design.md §6.
+  #   COLONY_DIR    path to the colony repo checkout (default ../colony)
+  #   THEIA_WS_DIR  path to the workspace bundle (registry + dist) (default ../theia)
+  #   SSH_KEY       path to the private key authorized on the rigs (default ~/.ssh/id_ed25519)
+  colony-api:
+    build: "${COLONY_DIR:-../colony}/api"
+    container_name: colony-api
+    volumes:
+      - "${COLONY_DIR:-../colony}:/colony:ro"          # playbooks + bin/colony
+      - "${THEIA_WS_DIR:-../theia}:/workspace:ro"        # registry + dist/manifest
+      - "${SSH_KEY:-~/.ssh/id_ed25519}:/root/.ssh/id_ed25519:ro"
+      - colony-journal:/var/lib/colony                   # deployment history
+    environment:
+      THEIA_WORKSPACE: /workspace
+      COLONY_ANSIBLE: /colony/ansible
+      COLONY_JOURNAL: /var/lib/colony/journal.jsonl
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+      # API key gating the mutating routes (same pattern as gs-api).
+      COLONY_API_KEY: "${COLONY_API_KEY:-}"
+    networks:
+      - mender
+
   # The operator web UI — the Mender-like fleet view + vendoring + monitoring.
   # Static SPA served by nginx, which proxies /api → gs-api.
   gs-web:
@@ -74,6 +101,7 @@ services:
 
 volumes:
   gs-minio-data:
+  colony-journal:
 
 # The Mender GW (up.sh) creates this network; join it as external so fleet-ops
 # reaches the deployments/inventory APIs without re-declaring the GW services.
