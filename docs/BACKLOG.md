@@ -16,8 +16,9 @@ each links its design.
   - [x] P1 — Connect Device ✓ CHECKPOINT passed (live accept-by-MAC; Mender-visible; com-half degrades on old runtime)
   - [x] P2 — base-state mirror + merged deployments ✓ CHECKPOINT passed (rpi4 Mender tags base_version=0.2.2; 1 base + 16 app in one list)
   - [ ] P3 — Fleet panel: status dots, group, Connect, merged timeline
-  - [ ] P4 — Deploy board (3-col, route-by-release-type, Confirm dialog)
-  - [ ] P5 — Releases catalog (runtime/app/role planes, lock state)
+  - [x] P4 — Deploy board (modern UF 3-col dashboard, route-by-release-type, runtime-compat gate) ✓ LIVE dalek:8090
+  - [x] P5 — Releases catalog (runtime↔app DEPENDENCY graph, no-backward-compat gate) ✓
+  - [ ] P5b — Releases: lock state + role plane
   - [ ] P6 — Rollouts (phased-by-group; no thresholds)
 
 See [design/gs-ux-design.md §8](design/gs-ux-design.md) for the full UF→GS
