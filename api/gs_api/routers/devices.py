@@ -84,14 +84,20 @@ def list_devices(group: str | None = Query(default=None)) -> dict:
     #    ListMachines: mender+com (present in the cluster) or mender-only (accepted
     #    but the supervisor isn't published — a real health gap). (com-only boards
     #    aren't in Mender inventory → they surface via /pending.) ────────────────
-    observed = _observed()              # machine name → present (raises 502 on fault)
+    observed = _observed()              # cluster view (raises 502 on fault)
+    by_inst = observed["by_inst"]
+    by_name = observed["by_name"]
     for d in devices:
-        # match a Mender device to a cluster machine. Prefer an explicit
-        # `machine`/`theia_machine` inventory attr; fall back to a name match.
-        mach = (d.get("machine") or d.get("name") or "").lower()
-        in_cluster = any(present and (mn.lower() == mach
-                                      or mn.lower() in mach or mach in mn.lower())
-                         for mn, present in observed.items())
+        attrs = d.get("attributes", {}) or {}
+        # 1. by INSTANCE (authoritative): the base-state mirror writes machine_instance
+        inst = attrs.get("machine_instance")
+        in_cluster = bool(inst is not None and by_inst.get(str(inst)))
+        # 2. by NAME (the manifest machine name, if the board reports it)
+        if not in_cluster:
+            mach = (attrs.get("machine") or d.get("name") or "").lower()
+            in_cluster = any(present and (mn.lower() == mach
+                                          or (mach and (mn.lower() in mach or mach in mn.lower())))
+                             for mn, present in by_name.items())
         d["connected"] = "mender+com" if in_cluster else "mender-only"
     # group rollup for the UI's fleet selector
     fleets: dict[str, int] = {}
@@ -99,7 +105,7 @@ def list_devices(group: str | None = Query(default=None)) -> dict:
         if d["fleet"]:
             fleets[d["fleet"]] = fleets.get(d["fleet"], 0) + 1
     return {"devices": devices, "count": len(devices), "fleets": fleets,
-            "cluster": observed}
+            "cluster": by_name}
 
 
 # ── Connect Device — the GS funnel (dual registration) ───────────────────────
@@ -107,20 +113,25 @@ def list_devices(group: str | None = Query(default=None)) -> dict:
 # the Observability cluster (present in ListMachines). GS is the single onboarding
 # path; nothing is connected until both are true. See docs/design/gs-ux-design.md §4.
 
-def _observed() -> dict[str, bool]:
-    """machine name → present, from the com aggregator's ListMachines. The whole
-    fleet runs a runtime with ListMachines (no degrade) — so a failure here is a
-    REAL fault (aggregator down / wrong endpoint), surfaced as 502, not silently
-    swallowed. The two-state cluster membership is authoritative."""
+def _observed() -> dict:
+    """The ListMachines cluster view from the com aggregator. The whole fleet runs
+    a runtime with ListMachines (no degrade) — a failure here is a REAL fault
+    (aggregator down / wrong endpoint), surfaced as 502, not swallowed. Returns
+    {by_name: {name: present}, by_inst: {instance: present}} so a device matches
+    by INSTANCE (robust to the m<N> name fallback when a board doesn't report its
+    manifest machine name) or by name."""
     try:
-        return {m["name"]: m["present"]
-                for m in com_client.list_machines(_aggregator())}
+        machines = com_client.list_machines(_aggregator())
     except Exception as e:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
             detail=f"ListMachines @ {_aggregator()} failed: {e}. The Observability "
                    "aggregator must be reachable (the fleet runs ListMachines "
                    "everywhere — no degrade).")
+    return {
+        "by_name": {m["name"]: m["present"] for m in machines},
+        "by_inst": {str(m["instance"]): m["present"] for m in machines},
+    }
 
 
 @router.get("/pending")
@@ -182,8 +193,8 @@ def connect(req: ConnectRequest) -> dict:
         "device_id": dev["id"],
         "mender": {"accepted": True, "newly_accepted": accepted,
                    "fleet_expected": req.fleet},
-        "observability": {"present_in_cluster": any(observed.values()),
-                          "machines": observed,
+        "observability": {"present_in_cluster": any(observed["by_name"].values()),
+                          "machines": observed["by_name"],
                           "aggregator": _aggregator()},
         "connected": True,   # Mender-accepted; com presence may warm up on next poll
     }

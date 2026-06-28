@@ -25,7 +25,7 @@ function Targets({ sel, setSel }) {
   const devices = data?.devices || []
   const selDev = devices.find((d) => d.id === sel)
   return (
-    <div className="pane h-full">
+    <div className="pane min-h-0">
       <div className="pane-head">
         Targets
         <span className="ml-auto flex gap-1 text-muted">
@@ -102,7 +102,7 @@ function Releases({ selRel, setSelRel }) {
     .map((r) => ({ kind: 'base', key: `base:${r.key}`, version: r.key || r.version, app: 'runtime+services' }))
   const rows = [...runtimes, ...apps]
   return (
-    <div className="pane h-full">
+    <div className="pane min-h-0">
       <div className="pane-head">
         Releases
         <span className="ml-auto flex gap-1 text-muted">
@@ -150,7 +150,7 @@ function ActionHistory({ targetName }) {
   const { data } = usePoll(() => api.deployments(), [], 6000)
   const rows = (data?.deployments || []).slice(0, 40)
   return (
-    <div className="pane h-full">
+    <div className="pane min-h-0">
       <div className="pane-head">Action History {targetName ? <span className="text-muted font-normal">: {targetName}</span> : ''}</div>
       <div className="flex-1 overflow-auto">
         <table className="w-full">
@@ -240,7 +240,7 @@ export function Deployment() {
       {msg && <div className="card px-3 py-1.5 text-xs text-slate-300">{msg}</div>}
 
       {/* 3-column board */}
-      <div className="flex-1 grid grid-cols-3 gap-2 min-h-0">
+      <div className="flex-1 grid grid-cols-3 grid-rows-1 gap-2 min-h-0">
         <Targets sel={selTarget} setSel={setSelTarget} />
         <Releases selRel={selRel} setSelRel={setSelRel} />
         <ActionHistory targetName={target?.name} />

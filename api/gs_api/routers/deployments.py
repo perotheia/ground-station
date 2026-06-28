@@ -153,9 +153,13 @@ def _mirror_base_state(s, rig: str, dep: dict) -> bool:
         return False
     # the runtime_version the rig pulled — from colony-api's rig registry
     ver = "unknown"
+    machine = rig
+    machine_instance = "0"
     try:
         rinfo = next((r for r in colony_client(s).rigs() if r.get("name") == rig), {})
         ver = rinfo.get("runtime_version") or "unknown"
+        machine = rinfo.get("machine") or rig
+        machine_instance = str(rinfo.get("machine_instance", "0"))
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -165,6 +169,10 @@ def _mirror_base_state(s, rig: str, dep: dict) -> bool:
             "base_kind": dep.get("kind", "orchestrate"),
             "base_deployed_at": str(int(time.time())),
             "base_status": "success",
+            # the cluster identity — lets the Fleet tri-state match a Mender device
+            # to a ListMachines entry by INSTANCE (robust to the m<N> name fallback).
+            "machine": machine,
+            "machine_instance": machine_instance,
         })
         return True
     except Exception:  # noqa: BLE001
