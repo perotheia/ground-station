@@ -35,4 +35,14 @@ export const api = {
   abort: (depId) => call(`/deployments/${depId}/abort`, { method: 'POST' }),
   // per-device ECU lifecycle
   ucmProgress: (deviceId) => call(`/ucm/${deviceId}/progress`),
+
+  // ── Connect Device (the GS funnel) ────────────────────────────────────────
+  pending: () => call('/devices/pending'),
+  connect: (mac, fleet, group) =>
+    call('/devices/connect', { method: 'POST', body: JSON.stringify({ mac, fleet, group }) }),
+  decommission: (id) => call(`/devices/${id}`, { method: 'DELETE' }),
+
+  // ── BASE deployment (colony) ──────────────────────────────────────────────
+  deployBase: (rig, kind = 'orchestrate') =>
+    call('/deployments/base', { method: 'POST', body: JSON.stringify({ rig, kind }) }),
 }

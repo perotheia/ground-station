@@ -5,10 +5,21 @@
 html, body, #root { height: 100%; }
 body { @apply bg-ink text-slate-200 antialiased; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
 
-/* dense data-table feel (Mender-like) */
+/* dense data-table feel (Update-Factory dashboard) */
 .cell { @apply px-3 py-2 text-sm; }
 .th { @apply px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted; }
 .badge { @apply inline-flex items-center rounded px-2 py-0.5 text-xs font-medium; }
-.btn { @apply rounded bg-accent/90 px-3 py-1.5 text-sm font-medium text-ink hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed; }
+.btn { @apply rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed; }
 .btn-ghost { @apply rounded border border-edge px-3 py-1.5 text-sm text-slate-300 hover:bg-panel; }
 .card { @apply rounded-lg border border-edge bg-panel; }
+
+/* dashboard chrome — the multi-pane UF layout */
+.pane { @apply flex flex-col rounded-lg border border-edge bg-panel overflow-hidden min-h-0; }
+.pane-head { @apply flex items-center gap-2 px-3 py-2 border-b border-edge bg-sidebar/40 text-sm font-semibold; }
+.icon-btn { @apply rounded p-1.5 text-muted hover:text-slate-100 hover:bg-edge/50 transition-colors; }
+.nav-item { @apply flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-muted hover:text-slate-100 hover:bg-edge/30 transition-colors cursor-pointer; }
+.nav-item-active { @apply bg-accent text-white hover:bg-accent hover:text-white; }
+.tab { @apply px-3 py-1.5 text-xs font-medium text-muted border-b-2 border-transparent hover:text-slate-200 cursor-pointer; }
+.tab-active { @apply text-accent border-accent; }
+/* selected row highlight (UF vivid-blue tint) */
+.row-sel { @apply bg-accent/15; }

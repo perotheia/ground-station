@@ -263,6 +263,45 @@ sees one list.
 
 ---
 
+## 8b. Runtime ↔ Application dependency (NO backward compatibility)
+
+A user app (a Distribution) depends on **exactly one** runtime+services release.
+There is no backward compat: an app's ABI, nanopb protos, runtime headers, and
+sysroot are all fixed at build time against one platform version. `gateway-1.0`
+built against `0.2.2-bookworm-arm64` runs on that base and no other.
+
+**The pin.** `theia release-app --requires-runtime <key>` records
+`requires_runtime` in the app's `app.json` + the app-plane `index.json`
+(e.g. `0.2.2-bookworm-arm64`). The Releases catalog reads it straight from the
+index — no app.json fetch.
+
+**The compatibility key is the P2 base-state mirror.** A device's installed
+runtime is already mirrored into its Mender tag `base_version` (§5). So the deploy
+gate is a single equality:
+
+```
+deploy app A to device D  ⟺  A.requires_runtime == D.base_version
+```
+
+If they differ, the deploy is **blocked** with a clear message — "device runs
+`0.2.1-bookworm-arm64`, `gateway-1.0` needs `0.2.2-bookworm-arm64`; update the
+base first." This makes the two planes' coupling explicit and safe: you can't
+silently land an app on an incompatible runtime.
+
+**Surfaced in three places:**
+1. **Releases (Distributions) catalog** — each app row shows its required runtime;
+   each runtime row shows the apps that depend on it (the dependency graph).
+2. **Confirm Assignment dialog** — the target list is split into *compatible*
+   (base_version matches) and *blocked* (mismatch, greyed with the reason).
+3. **Fleet panel** — a device's row pairs `Base(version)` + `App(artifact)`; a
+   mismatch (app present whose requires_runtime ≠ base_version) flags a warning.
+
+**Update ordering falls out naturally:** to ship a new app that needs a newer
+runtime, you first run a BASE deployment (colony) to bring the device's
+`base_version` up, *then* the app deploy unblocks. The UI can even chain it:
+"this needs base 0.2.3 — update base then app?" (a future convenience; v1 just
+blocks + explains).
+
 ## 9. Open design questions
 
 1. **colony-api run model** — does the Ansible play run *inside* the colony-api

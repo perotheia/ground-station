@@ -29,6 +29,31 @@ from ..settings import settings
 router = APIRouter(prefix="/api/planes", tags=["planes"])
 
 
+def _app_requires_runtime(s, fleet: str, app: str, version: str) -> str:
+    """The runtime an app version pins (its app-plane index.json requires_runtime).
+    Empty = unpinned (arch-only). Read from the catalog (already walked)."""
+    try:
+        for a in plane_client(s).apps_catalog():
+            if (a.get("fleet") == fleet and a.get("app") == app
+                    and str(a.get("version")) == str(version)):
+                return a.get("requires_runtime", "") or ""
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _device_base_version(m, device_id: str) -> str | None:
+    """A device's installed base runtime — the colony base-state mirror tag
+    `base_version` (the compatibility key)."""
+    for d in m.devices():
+        if d.get("id") == device_id:
+            for a in d.get("attributes", []) or []:
+                if a["name"] == "base_version":
+                    v = a["value"]
+                    return v[0] if isinstance(v, list) and v else v
+    return None
+
+
 @router.get("/runtime")
 def runtime_plane() -> dict:
     """The runtime vendoring catalog — every published platform release (per ABI)."""
@@ -56,6 +81,9 @@ def apps_plane() -> dict:
         app = a.get("app", "?")
         tree.setdefault(fleet, {}).setdefault(app, []).append({
             "version": a.get("version"), "artifact": a.get("artifact"),
+            # the pinned runtime dependency (no backward compat) — the deploy gate
+            # + the Releases dependency graph read this.
+            "requires_runtime": a.get("requires_runtime", ""),
             "key": a.get("_key"), "files": a.get("files", []),
         })
     return {"plane": "apps", "apps": cat, "tree": tree}
@@ -110,10 +138,33 @@ def publish_app(req: PublishRequest) -> dict:
                 raise HTTPException(
                     status_code=400,
                     detail=f"no devices in fleet '{req.fleet}' (device_type)")
+            # ── runtime-compat gate (no backward compat) ─────────────────────
+            # An app deploys ONLY onto a device whose installed base_version (the
+            # colony mirror tag) == the app's requires_runtime. Mismatches are
+            # blocked with the reason — "update the base first".
+            need = _app_requires_runtime(s, req.fleet, req.app, req.version)
+            blocked = []
+            if need:
+                # devices is a list of device IDs (resolve_fleet → list[str])
+                inv = {did: _device_base_version(m, did) for did in devices}
+                ok_devices = [did for did in devices if inv.get(did) == need]
+                blocked = [{"device": did, "base_version": inv.get(did)}
+                           for did in devices if inv.get(did) != need]
+                devices = ok_devices
+            if not devices:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"runtime-incompatible: {req.app} {req.version} needs "
+                           f"base '{need}', but no targeted device runs it. Update "
+                           f"the base (colony) first. Blocked: {blocked}")
             name = req.deployment_name or f"{artifact_name}-{req.fleet}"
             dep_id = m.create_deployment(name, artifact_name, devices)
             result["deployment"] = {"id": dep_id, "name": name,
                                     "devices": len(devices)}
+            if need:
+                result["requires_runtime"] = need
+                if blocked:
+                    result["blocked"] = blocked
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001

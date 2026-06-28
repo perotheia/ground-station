@@ -49,9 +49,15 @@ def _flatten(dev: dict) -> dict:
     return {
         "id": dev.get("id"),
         "updated_ts": dev.get("updated_ts"),
+        # a human name for the row — the rig hostname (raspberrypi / jason)
+        "name": attrs.get("hostname") or attrs.get("name"),
         # the hardware-capability fleet (Mender device_type) — our <fleet> key
         "fleet": attrs.get("device_type"),
         "group": attrs.get("group"),
+        # the installed BASE runtime — the P2 colony base-state mirror TAG. This is
+        # the compatibility key the app deploy gate checks against requires_runtime.
+        "base_version": attrs.get("base_version"),
+        "base_authority": attrs.get("base_authority"),
         # what's RUNNING on the rig (Mender's record of the installed artifact)
         "artifact": attrs.get("artifact_name") or attrs.get("rootfs-image.version"),
         # Theia inventory (present once the rig reports it; absent on a bare rig)

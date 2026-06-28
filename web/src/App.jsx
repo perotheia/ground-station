@@ -1,17 +1,31 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { api } from './api'
-import { Devices } from './views/Devices'
+import { Deployment } from './views/Deployment'
 import { Deployments } from './views/Deployments'
-import { Vendoring } from './views/Vendoring'
+import { Releases } from './views/Releases'
+import { Rollouts } from './views/Rollouts'
+import { Fleet } from './views/Fleet'
 
-const TABS = [
-  { id: 'devices', label: 'Fleet' },
-  { id: 'deployments', label: 'Deployments' },
-  { id: 'vendoring', label: 'Vendoring' },
+// Update-Factory-style left-rail nav. Deployment is the default landing view (the
+// 3-column board). Scope-cut items (Usage, Users, Config-as-MFA) are dropped.
+const NAV = [
+  { id: 'deployment', label: 'Deployment', icon: '⊞' },
+  { id: 'fleet', label: 'Fleet', icon: '▤' },
+  { id: 'releases', label: 'Releases', icon: '◈' },
+  { id: 'rollouts', label: 'Rollouts', icon: '⟳' },
+  { id: 'deployments', label: 'History', icon: '≡' },
 ]
 
+const TITLES = {
+  deployment: 'Deployment Management',
+  fleet: 'Fleet',
+  releases: 'Releases & Distributions',
+  rollouts: 'Rollouts',
+  deployments: 'Deployment History',
+}
+
 export default function App() {
-  const [tab, setTab] = useState('devices')
+  const [view, setView] = useState('deployment')
   const [cfg, setCfg] = useState(null)
   const [err, setErr] = useState(null)
 
@@ -20,59 +34,67 @@ export default function App() {
   }, [])
 
   return (
-    <div className="min-h-full flex flex-col">
-      <header className="border-b border-edge bg-panel/60 backdrop-blur">
-        <div className="mx-auto max-w-7xl px-6 py-3 flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <span className="text-accent text-xl font-bold">◆</span>
-            <h1 className="text-lg font-semibold tracking-tight">Theia Ground Station</h1>
-          </div>
-          <nav className="flex gap-1">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={`px-3 py-1.5 rounded text-sm font-medium ${
-                  tab === t.id ? 'bg-accent/15 text-accent' : 'text-muted hover:text-slate-200'
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </nav>
-          <div className="ml-auto text-xs text-muted">
-            {cfg ? (
-              <span>
-                GW <span className="text-slate-300">{cfg.mender_server}</span>
-                {' · '}
-                <span className={cfg.token_set ? 'text-emerald-400' : 'text-amber-400'}>
-                  {cfg.token_set ? 'authed' : 'no token'}
-                </span>
-              </span>
-            ) : (
-              'connecting…'
-            )}
-          </div>
+    <div className="h-full flex flex-col">
+      {/* ── Top header bar ─────────────────────────────────────────────── */}
+      <header className="flex items-center h-12 px-4 bg-sidebar border-b border-edge shrink-0">
+        <span className="text-muted text-lg mr-3 select-none">☰</span>
+        <h1 className="text-base font-semibold text-white">{TITLES[view]}</h1>
+        <div className="ml-auto flex items-center gap-4">
+          <span className="text-lg font-bold tracking-tight text-white">Theia Ground Station</span>
+          <span className="text-xs text-muted px-2 py-1 rounded-full border border-edge">
+            {cfg ? (cfg.token_set ? '● authed' : '○ no token') : '…'}
+          </span>
         </div>
       </header>
 
-      {err && (
-        <div className="mx-auto max-w-7xl w-full px-6 mt-4">
-          <div className="card border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">
-            backend: {err}
+      <div className="flex flex-1 min-h-0">
+        {/* ── Left sidebar ─────────────────────────────────────────────── */}
+        <aside className="w-52 bg-sidebar border-r border-edge flex flex-col shrink-0">
+          <div className="px-4 py-4 border-b border-edge">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center text-accent text-sm font-bold">◆</div>
+              <div className="text-sm font-medium text-slate-100">operator</div>
+            </div>
+            <div className="mt-2 inline-block text-[10px] font-semibold tracking-wider text-ok px-2 py-0.5 rounded bg-ok/10 border border-ok/30">
+              LAB
+            </div>
           </div>
-        </div>
-      )}
+          <nav className="flex-1 py-2">
+            {NAV.map((n) => (
+              <div
+                key={n.id}
+                onClick={() => setView(n.id)}
+                className={`nav-item ${view === n.id ? 'nav-item-active' : ''}`}
+              >
+                <span className="w-4 text-center opacity-80">{n.icon}</span>
+                {n.label}
+              </div>
+            ))}
+          </nav>
+          <a
+            href="https://docs.updatefactory.io/"
+            target="_blank"
+            rel="noreferrer"
+            className="nav-item border-t border-edge text-xs"
+          >
+            <span className="w-4 text-center">?</span> Documentation
+          </a>
+        </aside>
 
-      <main className="mx-auto max-w-7xl w-full px-6 py-6 flex-1">
-        {tab === 'devices' && <Devices />}
-        {tab === 'deployments' && <Deployments />}
-        {tab === 'vendoring' && <Vendoring />}
-      </main>
-
-      <footer className="border-t border-edge px-6 py-3 text-center text-xs text-muted">
-        Mender OTA control · runtime + app vendoring planes · the fleet operator surface
-      </footer>
+        {/* ── Main workspace ───────────────────────────────────────────── */}
+        <main className="flex-1 min-w-0 p-3 overflow-hidden">
+          {err && (
+            <div className="card border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger mb-3">
+              backend: {err}
+            </div>
+          )}
+          {view === 'deployment' && <Deployment />}
+          {view === 'fleet' && <Fleet />}
+          {view === 'releases' && <Releases />}
+          {view === 'rollouts' && <Rollouts />}
+          {view === 'deployments' && <Deployments />}
+        </main>
+      </div>
     </div>
   )
 }
