@@ -1,14 +1,38 @@
-import React, { useMemo } from 'react'
+import React, { useMemo, useState } from 'react'
 import { api } from '../api'
 import { usePoll } from '../App'
 
 // Releases (UF "Distributions" + "Upload") — the deployable-unit catalog across
 // both planes, surfacing the runtime↔app DEPENDENCY (no backward compat: each app
 // pins exactly one runtime). Runtime rows list the apps that depend on them.
+// ACT column: pin / delete (unpin before delete).
+
+function RowConfirm({ label, onYes, onNo }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px]">
+      <span className="text-muted">{label}?</span>
+      <button className="text-ok hover:underline" onClick={onYes}>Yes</button>
+      <button className="text-danger hover:underline" onClick={onNo}>No</button>
+    </span>
+  )
+}
 
 export function Releases() {
   const { data: rtData } = usePoll(() => api.runtimePlane(), [], 8000)
-  const { data: appData } = usePoll(() => api.appsPlane(), [], 8000)
+  const { data: appData, refresh } = usePoll(() => api.appsPlane(), [], 8000)
+  const [confirm, setConfirm] = useState(null)
+  const [busy, setBusy] = useState(null)
+  const [note, setNote] = useState(null)
+
+  const actKey = (a) => `${a.fleet}/${a.app}/${a.version}`
+  const act = async (a, fn, label) => {
+    setBusy(actKey(a)); setConfirm(null); setNote(null)
+    try { await fn(); refresh() }
+    catch (e) { setNote(`${label}: ${e.message}`) }
+    setBusy(null)
+  }
+  const pin = (a) => act(a, () => api.pinApp(a.fleet, a.app, a.version, !a.pinned), 'pin')
+  const del = (a) => act(a, () => api.deleteApp(a.fleet, a.app, a.version), 'delete')
 
   const apps = useMemo(() => {
     const out = []
@@ -17,7 +41,7 @@ export function Releases() {
       for (const [app, vers] of Object.entries(byApp)) {
         for (const v of vers) {
           out.push({ fleet, app, version: v.version,
-            requires: v.requires_runtime || v.requires || '' })
+            requires: v.requires_runtime || v.requires || '', pinned: !!v.pinned })
         }
       }
     }
@@ -60,10 +84,10 @@ export function Releases() {
         <div className="flex-1 overflow-auto">
           <table className="w-full">
             <thead className="sticky top-0 bg-sidebar/60">
-              <tr><th className="th">App</th><th className="th">Version</th><th className="th">Fleet</th><th className="th">Requires runtime</th></tr>
+              <tr><th className="th">App</th><th className="th">Version</th><th className="th">Fleet</th><th className="th">Requires runtime</th><th className="th text-right">ACT</th></tr>
             </thead>
             <tbody className="divide-y divide-edge/40">
-              {apps.length === 0 && <tr><td className="cell text-muted" colSpan={4}>no apps published — run <code className="text-accent">theia release-app</code></td></tr>}
+              {apps.length === 0 && <tr><td className="cell text-muted" colSpan={5}>no apps published — run <code className="text-accent">theia release-app</code></td></tr>}
               {apps.map((a) => (
                 <tr key={`${a.fleet}/${a.app}/${a.version}`} className="hover:bg-edge/20">
                   <td className="cell text-sm">{a.app}</td>
@@ -73,6 +97,18 @@ export function Releases() {
                     {a.requires
                       ? <span className="font-mono text-violet-300">{a.requires}</span>
                       : <span className="badge bg-amber-500/15 text-amber-400">unpinned</span>}
+                  </td>
+                  <td className="cell text-right whitespace-nowrap">
+                    {confirm === actKey(a)
+                      ? <RowConfirm label="delete" onYes={() => del(a)} onNo={() => setConfirm(null)} />
+                      : busy === actKey(a) ? <span className="text-muted text-xs">…</span>
+                      : <span className="inline-flex gap-0.5">
+                          <button className="icon-btn" title={a.pinned ? 'unpin' : 'pin (guard from delete)'}
+                                  onClick={() => pin(a)}>{a.pinned ? '📌' : '📍'}</button>
+                          <button className="icon-btn" title={a.pinned ? 'unpin before delete' : 'delete from plane'}
+                                  disabled={a.pinned} style={{ color: a.pinned ? '#5a6b7d' : '#E57373' }}
+                                  onClick={() => !a.pinned && setConfirm(actKey(a))}>🗑</button>
+                        </span>}
                   </td>
                 </tr>
               ))}

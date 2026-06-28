@@ -73,17 +73,21 @@ def apps_plane() -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"app plane: {e}")
     # group by fleet → app → versions for the UI's vendoring tree
+    pc = plane_client(s)
     tree: dict[str, dict[str, list[dict]]] = {}
     for a in cat:
         if "_error" in a:
             continue
         fleet = a.get("fleet", "?")
         app = a.get("app", "?")
+        ver = a.get("version")
         tree.setdefault(fleet, {}).setdefault(app, []).append({
-            "version": a.get("version"), "artifact": a.get("artifact"),
+            "version": ver, "artifact": a.get("artifact"),
             # the pinned runtime dependency (no backward compat) — the deploy gate
             # + the Releases dependency graph read this.
             "requires_runtime": a.get("requires_runtime", ""),
+            # operator pin (guards deletion) — a .pinned marker in the plane.
+            "pinned": pc.is_pinned(fleet, app, str(ver)),
             "key": a.get("_key"), "files": a.get("files", []),
         })
     return {"plane": "apps", "apps": cat, "tree": tree}
@@ -170,3 +174,42 @@ def publish_app(req: PublishRequest) -> dict:
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"deploy: {e}")
     return result
+
+
+# ── Releases ACT — pin / delete app-plane distributions ──────────────────────
+class AppRef(BaseModel):
+    fleet: str
+    app: str
+    version: str
+
+
+class AppPinRequest(AppRef):
+    pinned: bool
+
+
+@router.post("/apps/pin", dependencies=[Depends(require_key)])
+def pin_app(req: AppPinRequest) -> dict:
+    """Pin/unpin an app distribution (a `.pinned` marker object in the plane). A
+    pinned distribution is guarded from deletion — unpin first."""
+    s = settings()
+    try:
+        plane_client(s).set_pin(req.fleet, req.app, req.version, req.pinned)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"pin: {e}")
+    return {"fleet": req.fleet, "app": req.app, "version": req.version, "pinned": req.pinned}
+
+
+@router.delete("/apps", dependencies=[Depends(require_key)])
+def delete_app(req: AppRef) -> dict:
+    """Delete an app distribution from the S3 app plane. GUARDED — a pinned
+    distribution must be unpinned first (the destructive op is two-step)."""
+    s = settings()
+    pc = plane_client(s)
+    if pc.is_pinned(req.fleet, req.app, req.version):
+        raise HTTPException(status_code=409,
+                            detail="distribution is pinned — unpin before deleting")
+    try:
+        n = pc.delete_app(req.fleet, req.app, req.version)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"delete: {e}")
+    return {"fleet": req.fleet, "app": req.app, "version": req.version, "deleted_objects": n}

@@ -39,18 +39,20 @@ function Targets({ sel, setSel, onAssigned }) {
   const [busy, setBusy] = useState(null)
   const [note, setNote] = useState(null)
 
-  // zero-arity Cleanup: keep the device enrolled, remove its software
-  // (= colony cleanup <rig>). The rig is the device's machine tag (central/…).
-  const cleanup = async (d) => {
-    const rig = d.attributes?.machine || d.name
+  const act = async (d, fn, label) => {
     setBusy(d.id); setConfirm(null); setNote(null)
-    try {
-      const r = await api.deployBase(rig, 'cleanup')
-      setNote(`cleanup ${rig}: ${r.ok ? 'ok' : 'failed'}`)
-      refresh()
-    } catch (e) { setNote(`cleanup error: ${e.message}`) }
+    try { await fn(); refresh() }
+    catch (e) { setNote(`${label} error: ${e.message}`) }
     setBusy(null)
   }
+  // zero-arity Cleanup: keep enrolled, remove software (= colony cleanup <rig>).
+  const cleanup = (d) => act(d, async () => {
+    const rig = d.attributes?.machine || d.name
+    const r = await api.deployBase(rig, 'cleanup')
+    setNote(`cleanup ${rig}: ${r.ok ? 'ok' : 'failed'} — progress in Action History`)
+  }, 'cleanup')
+  const pin = (d) => act(d, () => api.pinDevice(d.id, !d.pinned), 'pin')
+  const del = (d) => act(d, () => api.decommission(d.id), 'delete')
 
   return (
     <div className="pane min-h-0">
@@ -65,7 +67,7 @@ function Targets({ sel, setSel, onAssigned }) {
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
-            <tr><th className="th">Name</th><th className="th">Base</th><th className="th">App</th><th className="th">St</th><th className="th"></th></tr>
+            <tr><th className="th">Name</th><th className="th">Base</th><th className="th">App</th><th className="th">St</th><th className="th text-right">ACT</th></tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
             {loading && <tr><td className="cell text-muted" colSpan={5}>loading…</td></tr>}
@@ -76,15 +78,22 @@ function Targets({ sel, setSel, onAssigned }) {
                 <td className="cell text-xs text-muted">{d.base_version || '—'}</td>
                 <td className="cell text-xs text-muted">{d.artifact || '—'}</td>
                 <td className="cell"><StatusDot s={d.connected} /></td>
-                <td className="cell text-right whitespace-nowrap">
-                  {confirm === d.id
+                <td className="cell text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                  {confirm === `clean:${d.id}`
                     ? <RowConfirm label="cleanup" onYes={() => cleanup(d)} onNo={() => setConfirm(null)} />
-                    : <button title="cleanup (keep enrolled, remove software)"
-                              className="icon-btn"
-                              disabled={busy === d.id}
-                              onClick={(e) => { e.stopPropagation(); setConfirm(d.id) }}>
-                        {busy === d.id ? '…' : '🧹'}
-                      </button>}
+                    : confirm === `del:${d.id}`
+                    ? <RowConfirm label="delete" onYes={() => del(d)} onNo={() => setConfirm(null)} />
+                    : busy === d.id ? <span className="text-muted text-xs">…</span>
+                    : <span className="inline-flex gap-0.5">
+                        <button className="icon-btn" title={d.pinned ? 'unpin' : 'pin (guard from delete)'}
+                                onClick={() => pin(d)}>{d.pinned ? '📌' : '📍'}</button>
+                        <button className="icon-btn" title="cleanup (keep enrolled, remove software)"
+                                onClick={() => setConfirm(`clean:${d.id}`)}>🧹</button>
+                        <button className="icon-btn" title={d.pinned ? 'unpin before delete' : 'delete (decommission)'}
+                                disabled={d.pinned}
+                                style={{ color: d.pinned ? '#5a6b7d' : '#E57373' }}
+                                onClick={() => !d.pinned && setConfirm(`del:${d.id}`)}>🗑</button>
+                      </span>}
                 </td>
               </tr>
             ))}
@@ -92,8 +101,7 @@ function Targets({ sel, setSel, onAssigned }) {
         </table>
       </div>
       {note && <div className="px-3 py-1 text-[11px] text-slate-300 border-t border-edge">{note}</div>}
-      {/* Target details (bottom pane) — tabbed Master-Detail (Details | Assigned) */}
-      <TargetDetails dev={selDev} onAssigned={() => { refresh(); onAssigned && onAssigned() }} />
+      <TargetDetails dev={selDev} />
       <div className="px-3 py-1.5 border-t border-edge text-[11px] text-muted">
         Total Targets: {devices.length}
       </div>
@@ -110,93 +118,25 @@ function Kv({ k, v, mono }) {
   )
 }
 
-// The bottom Target-Details pane: a tab bar (Details | Assigned) — the in-context
-// Master-Detail arity-1 workflow. The Assigned tab applies a distribution without
-// a modal, with the runtime-compat gate enforced inline.
-function TargetDetails({ dev, onAssigned }) {
-  const [tab, setTab] = useState('details')
+// The bottom Target-Details pane — read-only details (the deploy happens via the
+// top select-target + select-release + [Deploy →] bar; cleaner than an inline
+// assign). Base is the LIVE supervisor-reported release (stateless).
+function TargetDetails({ dev }) {
   if (!dev) return (
     <div className="border-t border-edge bg-sidebar/30 p-3 text-xs text-muted">Select a target to see details.</div>
   )
   return (
-    <div className="border-t border-edge bg-sidebar/30 text-xs">
-      <div className="flex items-center gap-1 px-3 pt-2">
-        <span className="font-semibold text-slate-100 mr-2">{dev.name || dev.id.slice(0, 12)}</span>
-        <span className={`tab ${tab === 'details' ? 'tab-active' : ''}`} onClick={() => setTab('details')}>Details</span>
-        <span className={`tab ${tab === 'assigned' ? 'tab-active' : ''}`} onClick={() => setTab('assigned')}>Assigned</span>
+    <div className="border-t border-edge bg-sidebar/30 p-3 text-xs">
+      <div className="font-semibold text-slate-100 mb-1">{dev.name || dev.id.slice(0, 12)}</div>
+      <div className="space-y-1">
+        <Kv k="Controller Id" v={dev.id} mono />
+        <Kv k="Fleet (type)" v={dev.fleet} />
+        <Kv k="Base runtime" v={dev.base_version
+          ? `${dev.base_version}${dev.base_source === 'live' ? ' (live)' : ''}`
+          : '— (no runtime reported)'} />
+        <Kv k="App" v={dev.artifact || '—'} />
+        <Kv k="Connected" v={dev.connected} />
       </div>
-      <div className="p-3">
-        {tab === 'details' ? (
-          <div className="space-y-1">
-            <Kv k="Controller Id" v={dev.id} mono />
-            <Kv k="Fleet (type)" v={dev.fleet} />
-            <Kv k="Base runtime" v={dev.base_version || '— (no colony deploy yet)'} />
-            <Kv k="App" v={dev.artifact || '—'} />
-            <Kv k="Connected" v={dev.connected} />
-          </div>
-        ) : <AssignedTab dev={dev} onAssigned={onAssigned} />}
-      </div>
-    </div>
-  )
-}
-
-// The Assigned tab — shows what's on the device + an inline compat-aware picker.
-function AssignedTab({ dev, onAssigned }) {
-  const { data } = usePoll(() => api.appsPlane(), [], 8000)
-  const [pick, setPick] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState(null)
-
-  // app distributions for THIS device's fleet, each tagged compatible/blocked vs
-  // the device's installed base_version (the runtime-compat gate, surfaced inline).
-  const choices = useMemo(() => {
-    const out = []
-    const byApp = (data?.tree || {})[dev.fleet] || {}
-    for (const [app, vers] of Object.entries(byApp)) {
-      for (const v of vers) {
-        const need = v.requires_runtime || ''
-        const compatible = !need || need === dev.base_version
-        out.push({ app, version: v.version, need, compatible,
-          label: `${app} ${v.version}`, value: `${app}:${v.version}` })
-      }
-    }
-    return out
-  }, [data, dev])
-
-  const assign = async () => {
-    const c = choices.find((x) => x.value === pick)
-    if (!c) return
-    setBusy(true); setMsg(null)
-    try {
-      const r = await api.publishApp(dev.fleet, c.app, c.version, true)
-      setMsg(r.deployment ? `assigned ${r.artifact_name} → ${r.deployment.devices} device(s)` : (r.detail || r.upload || 'done'))
-      onAssigned && onAssigned()
-    } catch (e) { setMsg(`blocked: ${e.message}`) }
-    setBusy(false)
-  }
-
-  const picked = choices.find((x) => x.value === pick)
-  return (
-    <div className="space-y-2">
-      <div className="text-muted">Currently: <span className="text-slate-300">{dev.artifact || 'no app'}</span> on base <span className="font-mono text-slate-300">{dev.base_version || '—'}</span></div>
-      <div className="flex items-center gap-2">
-        <select value={pick} onChange={(e) => setPick(e.target.value)}
-                className="bg-ink border border-edge rounded px-2 py-1 text-xs flex-1">
-          <option value="">Select a distribution to apply…</option>
-          {choices.map((c) => (
-            <option key={c.value} value={c.value} disabled={!c.compatible}>
-              {c.label}{c.compatible ? '' : ` — needs ${c.need}`}
-            </option>
-          ))}
-        </select>
-        <button className="btn" disabled={busy || !picked || !picked.compatible} onClick={assign}>
-          {busy ? '…' : 'Assign'}
-        </button>
-      </div>
-      {picked && !picked.compatible && (
-        <div className="text-danger text-[11px]">Incompatible: needs base {picked.need}, device runs {dev.base_version || '—'}. Update the base first.</div>
-      )}
-      {msg && <div className="text-[11px] text-slate-300">{msg}</div>}
     </div>
   )
 }
@@ -313,26 +253,37 @@ export function Deployment() {
   const [msg, setMsg] = useState(null)
   const [busy, setBusy] = useState(false)
 
-  // the runtime-compat gate: app.requires_runtime must == device.base_version
-  const compat = useMemo(() => {
-    if (!selRel || selRel.kind !== 'app' || !target) return { ok: true }
-    const need = selRel.requires
-    const have = target.base_version
-    if (!need) return { ok: true, note: 'app unpinned (arch-only)' }
-    return { ok: need === have, need, have }
+  // The deploy gate. An APP needs a target whose base_version == requires_runtime
+  // (no backward compat). A BASE deploy needs a target (the rig to (re)orchestrate).
+  // `ready` drives the Deploy button — it's only enabled when the action is valid.
+  const gate = useMemo(() => {
+    if (!selRel) return { ready: false, why: 'select a release' }
+    if (!target) return { ready: false, why: 'select a target' }
+    if (selRel.kind === 'base') return { ready: true, app: false }
+    // app: fleet must match + runtime must match
+    if (selRel.fleet && target.fleet && !String(target.fleet).includes(selRel.fleet))
+      return { ready: false, app: true, why: `target is not in fleet ${selRel.fleet}` }
+    const need = selRel.requires, have = target.base_version
+    if (!need) return { ready: true, app: true, note: 'app unpinned (arch-only)' }
+    if (need !== have)
+      return { ready: false, app: true, incompatible: true, need, have,
+               why: `device runs ${have || '—'}, needs ${need}` }
+    return { ready: true, app: true, compatible: true }
   }, [selRel, target])
 
   const deploy = async () => {
-    if (!selRel || (selRel.kind === 'app' && !target)) return
+    if (!gate.ready) return
     setBusy(true); setMsg(null)
     try {
       if (selRel.kind === 'base') {
-        const r = await api.deployBase('central', 'orchestrate')  // rig resolution: P4 wiring
-        setMsg(`base deploy ${r.ok ? 'OK' : 'failed'} (mirrored=${r.mirrored})`)
+        const rig = target.attributes?.machine || target.name
+        const r = await api.deployBase(rig, 'orchestrate')
+        setMsg(`base deploy ${rig}: ${r.ok ? 'OK' : 'failed'} — progress in Action History`)
       } else {
-        if (!compat.ok) { setMsg(`blocked: device runs ${compat.have || '—'}, ${selRel.app} needs ${compat.need}`); setBusy(false); return }
         const r = await api.publishApp(selRel.fleet, selRel.app, selRel.version, true)
-        setMsg(r.deployment ? `deployed ${r.artifact_name} → ${r.deployment.devices} device(s)` : (r.upload || 'published'))
+        setMsg(r.deployment
+          ? `deployed ${r.artifact_name} → ${r.deployment.devices} device(s) — see status in Mender UI`
+          : (r.detail || r.upload || 'published'))
       }
     } catch (e) { setMsg(`error: ${e.message}`) }
     setBusy(false)
@@ -346,13 +297,13 @@ export function Deployment() {
         <span className="font-mono text-slate-200">{target?.name || '— select —'}</span>
         <span className="text-muted">Release:</span>
         <span className="font-mono text-slate-200">{selRel ? `${selRel.kind === 'base' ? 'runtime' : selRel.app} ${selRel.version}` : '— select —'}</span>
-        {selRel?.kind === 'app' && target && !compat.ok && (
-          <span className="badge bg-danger/15 text-danger">incompatible: needs {compat.need}</span>
+        {gate.incompatible && (
+          <span className="badge bg-danger/15 text-danger" title={gate.why}>incompatible: needs {gate.need}</span>
         )}
-        {selRel?.kind === 'app' && target && compat.ok && (
+        {gate.compatible && (
           <span className="badge bg-ok/15 text-ok">compatible</span>
         )}
-        <button className="btn ml-auto" disabled={busy || !selRel} onClick={deploy}>
+        <button className="btn ml-auto" disabled={busy || !gate.ready} title={gate.why || ''} onClick={deploy}>
           {busy ? 'deploying…' : 'Deploy →'}
         </button>
       </div>

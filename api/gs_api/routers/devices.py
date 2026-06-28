@@ -58,6 +58,8 @@ def _flatten(dev: dict) -> dict:
         # the compatibility key the app deploy gate checks against requires_runtime.
         "base_version": attrs.get("base_version"),
         "base_authority": attrs.get("base_authority"),
+        # operator pin (guards deletion). "true"/"false" tag → bool.
+        "pinned": str(attrs.get("pinned", "")).lower() == "true",
         # what's RUNNING on the rig (Mender's record of the installed artifact)
         "artifact": attrs.get("artifact_name") or attrs.get("rootfs-image.version"),
         # Theia inventory (present once the rig reports it; absent on a bare rig)
@@ -87,18 +89,28 @@ def list_devices(group: str | None = Query(default=None)) -> dict:
     observed = _observed()              # cluster view (raises 502 on fault)
     by_inst = observed["by_inst"]
     by_name = observed["by_name"]
+    rel_by_inst = observed["rel_by_inst"]
+    rel_by_name = observed["rel_by_name"]
     for d in devices:
         attrs = d.get("attributes", {}) or {}
-        # 1. by INSTANCE (authoritative): the base-state mirror writes machine_instance
+        # 1. by INSTANCE (authoritative): the device's machine_instance tag
         inst = attrs.get("machine_instance")
         in_cluster = bool(inst is not None and by_inst.get(str(inst)))
+        live_rel = rel_by_inst.get(str(inst)) if inst is not None else ""
         # 2. by NAME (the manifest machine name, if the board reports it)
         if not in_cluster:
             mach = (attrs.get("machine") or d.get("name") or "").lower()
-            in_cluster = any(present and (mn.lower() == mach
-                                          or (mach and (mn.lower() in mach or mach in mn.lower())))
-                             for mn, present in by_name.items())
+            for mn, present in by_name.items():
+                if present and (mn.lower() == mach
+                                or (mach and (mn.lower() in mach or mach in mn.lower()))):
+                    in_cluster = True
+                    live_rel = live_rel or rel_by_name.get(mn, "")
+                    break
         d["connected"] = "mender+com" if in_cluster else "mender-only"
+        # STATELESS base_version: prefer the LIVE supervisor-reported release; fall
+        # back to the Mender mirror tag (transition: old runtimes report no release).
+        d["base_version"] = live_rel or d.get("base_version")
+        d["base_source"] = "live" if live_rel else ("mirror" if d.get("base_version") else None)
     # group rollup for the UI's fleet selector
     fleets: dict[str, int] = {}
     for d in devices:
@@ -131,6 +143,11 @@ def _observed() -> dict:
     return {
         "by_name": {m["name"]: m["present"] for m in machines},
         "by_inst": {str(m["instance"]): m["present"] for m in machines},
+        # LIVE base version (stateless) per instance/name, from the supervisor's
+        # release_version — the authoritative source GS reads (vs a stored tag).
+        "rel_by_inst": {str(m["instance"]): m.get("release_version", "") for m in machines},
+        "rel_by_name": {(m.get("machine_name") or m["name"]): m.get("release_version", "")
+                        for m in machines},
     }
 
 
@@ -200,13 +217,57 @@ def connect(req: ConnectRequest) -> dict:
     }
 
 
+def _device_pinned(m, device_id: str) -> bool:
+    for d in m.devices():
+        if d.get("id") == device_id:
+            for a in d.get("attributes", []) or []:
+                if a["name"] == "pinned":
+                    v = a["value"]
+                    return str(v[0] if isinstance(v, list) and v else v).lower() == "true"
+    return False
+
+
+class PinRequest(BaseModel):
+    pinned: bool
+
+
+@router.post("/{device_id}/pin", dependencies=[Depends(_require_key)])
+def pin(device_id: str, req: PinRequest) -> dict:
+    """Pin/unpin a device (a `pinned` Mender tag). A pinned device is guarded from
+    deletion — you must unpin first (a deliberate two-step for the destructive op)."""
+    s = settings()
+    m = mender_client(s)
+    # preserve other tags isn't trivial via PUT-replace; pin is a single managed
+    # tag here — set_tags replaces the tag set, so re-merge the base-state tags.
+    keep = {}
+    for d in m.devices():
+        if d.get("id") == device_id:
+            for a in d.get("attributes", []) or []:
+                if a.get("scope") == "tags" and a["name"] != "pinned":
+                    v = a["value"]
+                    keep[a["name"]] = v[0] if isinstance(v, list) and v else v
+            break
+    tags = dict(keep)
+    if req.pinned:
+        tags["pinned"] = "true"
+    try:
+        m.set_tags(device_id, tags)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"pin: {e}")
+    return {"device_id": device_id, "pinned": req.pinned}
+
+
 @router.delete("/{device_id}", dependencies=[Depends(_require_key)])
 def decommission(device_id: str) -> dict:
-    """The inverse of Connect: decommission the Mender device. (com presence drops
-    when the board's supervisor withdraws — no explicit com de-register.)"""
+    """The inverse of Connect: decommission the Mender device. GUARDED — a PINNED
+    device must be unpinned first (the destructive op is deliberately two-step)."""
     s = settings()
+    m = mender_client(s)
+    if _device_pinned(m, device_id):
+        raise HTTPException(status_code=409,
+                            detail="device is pinned — unpin before deleting")
     try:
-        mender_client(s).decommission_device(device_id)
+        m.decommission_device(device_id)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"decommission: {e}")
     return {"device_id": device_id, "decommissioned": True}

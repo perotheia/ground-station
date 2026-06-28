@@ -79,7 +79,12 @@ def list_machines(target: str, timeout: float = 6.0) -> list[dict]:
     with _channel(target) as ch:
         stub = _svpbg.SupervisorViewStub(ch)
         rep = stub.ListMachines(_svpb.ListMachinesCall(), timeout=timeout)
-        return [{"instance": m.instance, "name": m.name, "present": m.present}
+        return [{"instance": m.instance, "name": m.name, "present": m.present,
+                 # the LIVE base version reported by the supervisor (stateless) —
+                 # empty until a runtime with release_version is deployed.
+                 "release_version": (m.info.release_version
+                                     if m.HasField("info") else "") or "",
+                 "machine_name": (m.info.machine_name if m.HasField("info") else "") or ""}
                 for m in rep.machines]
 
 

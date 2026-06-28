@@ -41,8 +41,17 @@ export const api = {
   connect: (mac, fleet, group) =>
     call('/devices/connect', { method: 'POST', body: JSON.stringify({ mac, fleet, group }) }),
   decommission: (id) => call(`/devices/${id}`, { method: 'DELETE' }),
+  // pin guards a device from deletion (unpin before delete)
+  pinDevice: (id, pinned) =>
+    call(`/devices/${id}/pin`, { method: 'POST', body: JSON.stringify({ pinned }) }),
 
   // ── BASE deployment (colony) ──────────────────────────────────────────────
   deployBase: (rig, kind = 'orchestrate') =>
     call('/deployments/base', { method: 'POST', body: JSON.stringify({ rig, kind }) }),
+
+  // ── Releases plane management (ACT: pin/delete) ───────────────────────────
+  pinApp: (fleet, app, version, pinned) =>
+    call('/planes/apps/pin', { method: 'POST', body: JSON.stringify({ fleet, app, version, pinned }) }),
+  deleteApp: (fleet, app, version) =>
+    call('/planes/apps', { method: 'DELETE', body: JSON.stringify({ fleet, app, version }) }),
 }

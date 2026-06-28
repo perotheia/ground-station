@@ -134,6 +134,35 @@ class PlaneClient:
         bucket = self._runtime if bucket_kind == "runtime" else self._apps
         return self._s3.get_object(Bucket=bucket, Key=key)["Body"].read()
 
+    # ── plane management (Releases ACT: pin/delete) ──────────────────────────
+    def app_prefix(self, fleet: str, app: str, version: str) -> str:
+        return f"user-software/{fleet}/{app}/{version}/"
+
+    def is_pinned(self, fleet: str, app: str, version: str) -> bool:
+        try:
+            self._s3.head_object(Bucket=self._apps,
+                                 Key=self.app_prefix(fleet, app, version) + ".pinned")
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    def set_pin(self, fleet: str, app: str, version: str, pinned: bool) -> None:
+        key = self.app_prefix(fleet, app, version) + ".pinned"
+        if pinned:
+            self._s3.put_object(Bucket=self._apps, Key=key, Body=b"1")
+        else:
+            self._s3.delete_object(Bucket=self._apps, Key=key)
+
+    def delete_app(self, fleet: str, app: str, version: str) -> int:
+        """Delete every object under the app version's prefix. Returns the count."""
+        pfx = self.app_prefix(fleet, app, version)
+        paginator = self._s3.get_paginator("list_objects_v2")
+        keys = [o["Key"] for page in paginator.paginate(Bucket=self._apps, Prefix=pfx)
+                for o in page.get("Contents", [])]
+        for k in keys:
+            self._s3.delete_object(Bucket=self._apps, Key=k)
+        return len(keys)
+
 
 def plane_client(s: Settings) -> PlaneClient:
     return PlaneClient(s)

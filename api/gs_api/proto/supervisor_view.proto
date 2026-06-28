@@ -12,11 +12,19 @@ package services.com;
 
 message ListMachinesCall {}
 
+// A minimal SystemInfo — just the fields GS needs for the stateless base read.
+// Tag numbers MUST match the full supervisor.proto SystemInfo (release_version=15,
+// machine_name=14); other tags are skipped on decode.
+message SystemInfo {
+  string machine_name    = 14;   // the real board name (central/compute)
+  string release_version = 15;   // the LIVE installed runtime release (base_version)
+}
+
 message MachineInfo {
   uint32 instance = 1;   // TIPC instance (central=0, compute=1, …)
   string name     = 2;   // machine name from the manifest (or "mN" fallback)
   bool   present  = 3;   // currently published in the TIPC topology
-  // field 4 (SystemInfo info) intentionally omitted — skipped on decode.
+  SystemInfo info = 4;   // the supervisor's cached identity (release_version etc.)
 }
 
 message MachineList {
