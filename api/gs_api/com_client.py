@@ -17,8 +17,11 @@ import tempfile
 from pathlib import Path
 
 _PROTO = Path(__file__).resolve().parent / "proto" / "ucm_view.proto"
+_SV_PROTO = Path(__file__).resolve().parent / "proto" / "supervisor_view.proto"
 _pb = None
 _pbg = None
+_svpb = None
+_svpbg = None
 
 
 def _ensure_stubs():
@@ -42,6 +45,42 @@ def _ensure_stubs():
         sys.path.insert(0, str(outdir))
     _pb = importlib.import_module("ucm_view_pb2")
     _pbg = importlib.import_module("ucm_view_pb2_grpc")
+
+
+def _ensure_sv_stubs():
+    """Compile supervisor_view.proto → the ListMachines stub (the Connect com-half)."""
+    global _svpb, _svpbg
+    if _svpb is not None:
+        return
+    from grpc_tools import protoc  # noqa: PLC0415
+    outdir = Path(tempfile.gettempdir()) / "gs_sv_stubs"
+    outdir.mkdir(exist_ok=True)
+    rc = protoc.main([
+        "protoc",
+        f"-I{_SV_PROTO.parent}",
+        f"--python_out={outdir}",
+        f"--grpc_python_out={outdir}",
+        str(_SV_PROTO),
+    ])
+    if rc != 0:
+        raise RuntimeError("protoc failed compiling supervisor_view.proto")
+    if str(outdir) not in sys.path:
+        sys.path.insert(0, str(outdir))
+    _svpb = importlib.import_module("supervisor_view_pb2")
+    _svpbg = importlib.import_module("supervisor_view_pb2_grpc")
+
+
+def list_machines(target: str, timeout: float = 6.0) -> list[dict]:
+    """The Observability cluster as com sees it (ListMachines on the aggregator at
+    <target>:7700). Each {instance, name, present}. The Connect com-half is
+    observational: a board joins by self-publishing over TIPC topology — GS just
+    confirms it shows up `present=true`. Raises on an unreachable aggregator."""
+    _ensure_sv_stubs()
+    with _channel(target) as ch:
+        stub = _svpbg.SupervisorViewStub(ch)
+        rep = stub.ListMachines(_svpb.ListMachinesCall(), timeout=timeout)
+        return [{"instance": m.instance, "name": m.name, "present": m.present}
+                for m in rep.machines]
 
 
 def _channel(target: str):

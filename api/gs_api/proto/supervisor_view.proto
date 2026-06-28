@@ -1,0 +1,30 @@
+// Minimal slice of theia's services/com/proto/supervisor_bridge.proto — JUST the
+// ListMachines RPC, for GS's Connect-Device com-half (observational): confirm a
+// board is present in the Observability cluster.
+//
+// We deliberately omit MachineInfo.info (field 4, a system_supervisor.SystemInfo)
+// — proto3 forward-compat skips the unknown field on decode, so GS gets name +
+// present without vendoring supervisor.proto. The wire stays compatible with the
+// full SupervisorView service on com :7700.
+syntax = "proto3";
+
+package services.com;
+
+message ListMachinesCall {}
+
+message MachineInfo {
+  uint32 instance = 1;   // TIPC instance (central=0, compute=1, …)
+  string name     = 2;   // machine name from the manifest (or "mN" fallback)
+  bool   present  = 3;   // currently published in the TIPC topology
+  // field 4 (SystemInfo info) intentionally omitted — skipped on decode.
+}
+
+message MachineList {
+  repeated MachineInfo machines = 1;
+}
+
+// The same service com hosts on :7700. We declare ONLY ListMachines; the other
+// RPCs are irrelevant to Connect and stay in the full proto.
+service SupervisorView {
+  rpc ListMachines (ListMachinesCall) returns (MachineList);
+}

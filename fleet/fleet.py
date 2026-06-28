@@ -184,6 +184,62 @@ class Mender:
     def device_ids_in_group(self, group: str) -> list[str]:
         return [d["id"] for d in self.devices(group)]
 
+    # ---- device lifecycle (deviceauth + inventory): the Connect-Device plumbing -
+    def auth_devices(self) -> list:
+        """Every device auth-set (deviceauth v2) — id, identity_data, status."""
+        st, data, _ = self._req(
+            "GET", "/api/management/v2/devauth/devices?per_page=500")
+        if st != 200:
+            raise RuntimeError(f"auth_devices [{st}]: {data.decode(errors='replace')[:200]}")
+        return json.loads(data or b"[]")
+
+    def find_by_mac(self, mac: str) -> dict | None:
+        """The device auth-set whose identity_data.mac matches (the board's MAC is
+        our stable handle for Connect — it survives a provides/store reset)."""
+        for d in self.auth_devices():
+            if (d.get("identity_data") or {}).get("mac") == mac:
+                return d
+        return None
+
+    def accept_device(self, device_id: str, auth_set_id: str) -> bool:
+        """Accept a pending auth-set → the device becomes deployable (Mender 'sees'
+        it). The com/Observability side is separate (ListMachines, observational)."""
+        st, data, _ = self._req(
+            "PUT",
+            f"/api/management/v2/devauth/devices/{device_id}/auth/{auth_set_id}/status",
+            body={"status": "accepted"})
+        if st not in (204, 200):
+            raise RuntimeError(f"accept [{st}]: {data.decode(errors='replace')[:200]}")
+        return True
+
+    def decommission_device(self, device_id: str) -> bool:
+        """Remove the device (deviceauth) — the inverse of accept."""
+        st, data, _ = self._req(
+            "DELETE", f"/api/management/v2/devauth/devices/{device_id}")
+        if st not in (204, 200):
+            raise RuntimeError(f"decommission [{st}]: {data.decode(errors='replace')[:200]}")
+        return True
+
+    def assign_group(self, device_id: str, group: str) -> bool:
+        """Put a device into a Mender group (the Connect optional step)."""
+        st, data, _ = self._req(
+            "PUT", f"/api/management/v1/inventory/devices/{device_id}/group",
+            body={"group": group})
+        if st not in (204, 200):
+            raise RuntimeError(f"assign_group [{st}]: {data.decode(errors='replace')[:200]}")
+        return True
+
+    def set_tags(self, device_id: str, tags: dict) -> bool:
+        """Operator-set inventory TAGS (scope=tags). The base-state mirror (P2)
+        writes base_version/base_authority here so Mender UX reflects colony. PUT
+        replaces the whole tag set; {} clears. (Verified: 200 on the live rpi4.)"""
+        st, data, _ = self._req(
+            "PUT", f"/api/management/v1/inventory/devices/{device_id}/tags",
+            body=[{"name": k, "value": v} for k, v in tags.items()])
+        if st not in (200, 204):
+            raise RuntimeError(f"set_tags [{st}]: {data.decode(errors='replace')[:200]}")
+        return True
+
 
 # --- CLI ----------------------------------------------------------------------
 
