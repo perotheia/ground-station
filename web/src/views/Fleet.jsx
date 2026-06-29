@@ -219,29 +219,80 @@ function GroupDialog({ ids, groups, onClose, onDone }) {
 }
 
 // Preauthorize a device before it checks in: identity MAC + pubkey → devauth.
+// Preauthorize a 3rd-party-installed device BEFORE it checks in. Same fields as
+// Create-New-Target, but there's no host to probe: Controller ID is a GENERATED
+// UUID (the device must report it as its mender identity), and we paste the
+// device's PEM public key (the 3rd party gives us). On check-in Mender matches
+// identity+key and auto-accepts. We also hand them OUR pubkey for authorized_keys
+// (so we can SSH it to verify reachability / deploy).
 function PreauthorizeDialog({ onClose, onDone }) {
-  const [mac, setMac] = useState(''); const [pubkey, setPubkey] = useState('')
+  const [cid] = useState(() => (crypto.randomUUID ? crypto.randomUUID() : `dev-${Date.now()}`))
+  const [name, setName] = useState('')
+  const [type, setType] = useState('')
+  const [desc, setDesc] = useState('')
+  const [pubkey, setPubkey] = useState('')
+  const [types, setTypes] = useState([])
+  const [ourKey, setOurKey] = useState('')
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(null)
+  useEffect(() => {
+    api.deviceTypes().then((d) => { setTypes(d.types || []); setType((d.types || [])[0] || '') }).catch(() => {})
+    api.ourPubkey().then((d) => setOurKey(d.pubkey || '')).catch(() => {})
+  }, [])
   const save = async () => {
-    if (!mac.trim() || !pubkey.trim()) { setErr('MAC and public key are required'); return }
+    if (!pubkey.trim()) { setErr("paste the device's PEM public key"); return }
     setBusy(true); setErr(null)
-    try { await api.preauthorize(mac.trim(), pubkey.trim()); onDone() }
-    catch (e) { setErr(e.message) }
+    try {
+      await api.preauthorize(cid, pubkey.trim(), name || undefined, type || undefined, desc || undefined)
+      onDone()
+    } catch (e) { setErr(e.message) }
     setBusy(false)
   }
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="card w-[30rem] p-4" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center mb-3"><h3 className="font-semibold" style={{ color: '#4A90E2' }}>Preauthorize a device</h3>
-          <button className="btn-ghost ml-auto" onClick={onClose}>✕</button></div>
-        <p className="text-xs text-muted mb-3">Submit a device's identity + public key BEFORE it checks in.
-          When the board first connects with this MAC + key, Mender auto-accepts it.</p>
-        <label className="block text-xs text-muted mb-1">MAC (identity) <span className="text-red-400">*</span></label>
-        <input className="input w-full mb-3 text-sm font-mono" placeholder="dc:a6:32:.." value={mac} onChange={(e) => setMac(e.target.value)} />
-        <label className="block text-xs text-muted mb-1">Public key (PEM) <span className="text-red-400">*</span></label>
-        <textarea className="input w-full text-xs h-24 font-mono" placeholder="-----BEGIN PUBLIC KEY-----" value={pubkey} onChange={(e) => setPubkey(e.target.value)} />
-        {err && <div className="text-xs text-red-400 mt-2">{err}</div>}
-        <button className="btn w-full mt-3" disabled={busy} onClick={save}>{busy ? '…' : '💾 Preauthorize'}</button>
+      <div className="card w-[32rem] p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center mb-3">
+          <h3 className="font-medium text-center flex-1" style={{ color: '#4A90E2' }}>Preauthorize a device</h3>
+          <button className="text-slate-400 hover:text-slate-200" onClick={onClose}>✕</button>
+        </div>
+        <div className="mb-3 rounded border border-edge bg-ink/60 p-2">
+          <div className="text-[11px] text-muted mb-1">① Give the installer OUR public key (add to the device's
+            <code> authorized_keys</code> so we can reach it):</div>
+          <div className="flex gap-2 items-start">
+            <textarea readOnly className="input text-[10px] h-12 font-mono flex-1" value={ourKey} />
+            <button className="btn-ghost text-xs" onClick={() => navigator.clipboard?.writeText(ourKey)}>copy</button>
+          </div>
+        </div>
+        <div className="text-[11px] text-muted mb-2">② Register the device:</div>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <label className="w-28 text-right text-xs">Controller ID <span className="text-red-400">*</span></label>
+            <input className="input flex-1 text-sm font-mono" value={cid} readOnly title="generated identity (UUID)" />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="w-28 text-right text-xs text-muted">Name</label>
+            <input className="input flex-1 text-sm" placeholder="rig-2" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="w-28 text-right text-xs text-muted">Type</label>
+            <select className="input flex-1 text-sm" value={type} onChange={(e) => setType(e.target.value)}>
+              {types.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div className="flex items-start gap-2">
+            <label className="w-28 text-right text-xs text-muted pt-1">Description</label>
+            <textarea className="input flex-1 text-sm h-12" placeholder="3rd-party installed" value={desc} onChange={(e) => setDesc(e.target.value)} />
+          </div>
+          <div className="flex items-start gap-2">
+            <label className="w-28 text-right text-xs">Public key <span className="text-red-400">*</span></label>
+            <textarea className="input flex-1 text-xs h-20 font-mono" placeholder="-----BEGIN PUBLIC KEY-----" value={pubkey} onChange={(e) => setPubkey(e.target.value)} />
+          </div>
+        </div>
+        <div className="text-[11px] text-red-400 mt-3">* Mandatory Field</div>
+        {err && <div className="text-xs text-red-400 mt-1">{err}</div>}
+        <div className="flex justify-center gap-6 mt-3 text-slate-300">
+          <button className="hover:text-white" disabled={busy} onClick={save}>💾 Preauthorize</button>
+          <button className="hover:text-white" onClick={onClose}>✕ Cancel</button>
+        </div>
       </div>
     </div>
   )

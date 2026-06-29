@@ -74,6 +74,13 @@ def _flatten(dev: dict) -> dict:
         "sm_state": attrs.get("theia_sm_state"),
         "ucm_version": attrs.get("theia_ucm_version"),
         "ip": attrs.get("ipv4_eth0") or attrs.get("network_interfaces"),
+        # Operator-set IPs (Mender tags). local_ip = the on-site address used AT
+        # deploy time (Connect-new or the Deploy prompt). remote_ip = a VPN address
+        # added later (Add-to-VPN). We DON'T assume local_ip stays reachable. Ops
+        # prefer remote_ip then local_ip. See project-preauth-device-workflow.
+        "local_ip": attrs.get("local_ip"),
+        "remote_ip": attrs.get("remote_ip"),
+        "reachable_ip": attrs.get("remote_ip") or attrs.get("local_ip"),
         # keep the raw attrs for a detail view / future panels
         "attributes": attrs,
     }
@@ -204,22 +211,94 @@ def _observed() -> dict:
 
 
 class PreauthorizeRequest(BaseModel):
-    mac: str                         # the device's identity_data.mac
-    pubkey: str                      # its public key (PEM)
-    name: str | None = None          # optional operator display name (tag, applied on accept)
+    controller_id: str               # the device's mender IDENTITY (we generate a
+                                     # UUID; the device must report it as its
+                                     # mender identity for the preauth to match)
+    pubkey: str                      # the device's public key (PEM the 3rd party gives us)
+    name: str | None = None          # display name (Mender tag)
+    fleet: str | None = None         # device_type (Type) — set as a tag too
+    description: str | None = None
+
+
+@router.get("/our-pubkey")
+def our_pubkey() -> dict:
+    """OUR SSH public key (from colony-api) to hand the 3rd party — they add it to
+    a preauthorized device's authorized_keys so colony can SSH it at deploy time."""
+    from ..colony_client import colony_client
+    import json as _j
+    s = settings()
+    st, data = colony_client(s)._req("GET", "/pubkey")  # noqa: SLF001
+    if st != 200:
+        raise HTTPException(status_code=502, detail="our-pubkey: colony-api unavailable")
+    return _j.loads(data or b"{}")
+
+
+class IpRequest(BaseModel):
+    ip: str
+    kind: str = "local"          # "local" (on-site, deploy-time) | "remote" (VPN)
+
+
+@router.post("/{device_id}/ip", dependencies=[Depends(_require_key)])
+def set_ip(device_id: str, req: IpRequest) -> dict:
+    """Record a device's IP as a Mender tag: local_ip (deploy-time on-site address)
+    or remote_ip (VPN address, set by Add-to-VPN). We DON'T probe — it's recorded,
+    not verified-reachable. Ops later prefer remote_ip then local_ip."""
+    s = settings()
+    tag = "remote_ip" if req.kind == "remote" else "local_ip"
+    try:
+        mender_client(s).set_tags(device_id, {tag: req.ip})
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"set {tag}: {e}")
+    return {"device_id": device_id, tag: req.ip}
+
+
+@router.post("/{device_id}/vpn", dependencies=[Depends(_require_key)])
+def add_to_vpn(device_id: str, req: IpRequest) -> dict:
+    """Add a device to the VPN: record its remote_ip (the reachable VPN address).
+    A thin record for now — the actual VPN-join is operator/out-of-band; this makes
+    remote_ip the authoritative ops address (precedence over local_ip)."""
+    s = settings()
+    try:
+        mender_client(s).set_tags(device_id, {"remote_ip": req.ip})
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"add to vpn: {e}")
+    return {"device_id": device_id, "remote_ip": req.ip}
 
 
 @router.post("/preauthorize", dependencies=[Depends(_require_key)])
 def preauthorize(req: PreauthorizeRequest) -> dict:
-    """Pre-authorize a device BEFORE it checks in: submit identity_data (MAC) +
-    pubkey to devauth. When the real board first connects with that identity+key
-    Mender auto-accepts it. (Connect option 2, vs the SSH-probe 'connect new'.)"""
+    """Pre-authorize a device BEFORE it checks in (Connect option 2, vs the
+    SSH-probe path). Identity = a UUID (Controller ID) the device must report as
+    its mender identity; pubkey = the device's PEM key (from the 3rd party). When
+    the device first connects with that identity+key Mender auto-accepts it.
+    Name/Type/Description are recorded as Mender tags so the Target shows them."""
+    pub = (req.pubkey or "").strip()
+    if "BEGIN" not in pub or "PUBLIC KEY" not in pub:
+        raise HTTPException(status_code=400,
+                            detail="public key must be PEM (-----BEGIN PUBLIC KEY-----). "
+                                   "The 3rd party provides the device's PEM public key.")
     s = settings()
+    m = mender_client(s)
     try:
-        r = mender_client(s).preauthorize({"mac": req.mac}, req.pubkey)
+        # identity_data = {"device_id": <uuid>} — the device's mender identity must
+        # match this. (MAC works too, but a UUID avoids the which-interface question.)
+        r = m.preauthorize({"device_id": req.controller_id}, pub)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"preauthorize: {e}")
-    return {"mac": req.mac, "status": "preauthorized", **r}
+    # tag the resulting device with the operator metadata (best-effort; the device
+    # record exists once preauth returns its Location).
+    dev_id = (r.get("location") or "").rstrip("/").split("/")[-1]
+    if dev_id:
+        tags = {}
+        if req.name: tags["name"] = req.name
+        if req.fleet: tags["device_type"] = req.fleet
+        if req.description: tags["description"] = req.description
+        if tags:
+            try:
+                m.set_tags(dev_id, tags)
+            except Exception:  # noqa: BLE001
+                pass
+    return {"controller_id": req.controller_id, "status": "preauthorized", **r}
 
 
 @router.get("/pending")

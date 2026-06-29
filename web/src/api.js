@@ -61,8 +61,13 @@ export const api = {
   deviceTypes: () => call('/devices/types'),
   // ── Fleet panel (P3): groups + per-device merged timeline ─────────────────
   groups: () => call('/devices/groups/list'),
-  preauthorize: (mac, pubkey, name) =>
-    call('/devices/preauthorize', { method: 'POST', body: JSON.stringify({ mac, pubkey, name }) }),
+  preauthorize: (controller_id, pubkey, name, fleet, description) =>
+    call('/devices/preauthorize', { method: 'POST', body: JSON.stringify({ controller_id, pubkey, name, fleet, description }) }),
+  ourPubkey: () => call('/devices/our-pubkey'),
+  setIp: (id, ip, kind) =>
+    call(`/devices/${id}/ip`, { method: 'POST', body: JSON.stringify({ ip, kind }) }),
+  addToVpn: (id, ip) =>
+    call(`/devices/${id}/vpn`, { method: 'POST', body: JSON.stringify({ ip, kind: 'remote' }) }),
   assignGroup: (id, group) =>
     call(`/devices/${id}/group`, { method: 'POST', body: JSON.stringify({ group }) }),
   removeGroup: (id, group) =>
@@ -70,8 +75,8 @@ export const api = {
   deviceTimeline: (id) => call(`/devices/${id}/timeline`),
 
   // ── BASE deployment (colony) ──────────────────────────────────────────────
-  deployBase: (rig, kind = 'orchestrate') =>
-    call('/deployments/base', { method: 'POST', body: JSON.stringify({ rig, kind }) }),
+  deployBase: (rig, kind = 'orchestrate', ip, device_id) =>
+    call('/deployments/base', { method: 'POST', body: JSON.stringify({ rig, kind, ip, device_id }) }),
 
   // ── Releases plane management (ACT: pin/delete) ───────────────────────────
   pinApp: (fleet, app, version, pinned) =>

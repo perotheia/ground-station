@@ -49,10 +49,11 @@ class Colony:
         return json.loads(data or b"{}")
 
     def create(self, rig: str, kind: str = "orchestrate",
-               schedule: float | None = None, name: str | None = None) -> dict:
+               schedule: float | None = None, name: str | None = None,
+               host: str | None = None) -> dict:
         st, data = self._req("POST", "/deployments",
                              {"rig": rig, "kind": kind,
-                              "schedule": schedule, "name": name})
+                              "schedule": schedule, "name": name, "host": host})
         if st not in (200, 201):
             raise RuntimeError(f"colony create [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"{}")

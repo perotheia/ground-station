@@ -112,6 +112,9 @@ class BaseDeployRequest(BaseModel):
     kind: str = "orchestrate"        # provision | orchestrate
     schedule: float | None = None
     mirror: bool = True              # write the base-state tags on finish
+    ip: str | None = None            # explicit target IP (preauth device w/ no
+                                     # local_ip → the Deploy prompt supplies it)
+    device_id: str | None = None     # the Mender device, to record local_ip on
 
 
 @router.post("/base", dependencies=[Depends(require_key)])
@@ -124,7 +127,16 @@ def deploy_base(req: BaseDeployRequest) -> dict:
     import time
     s = settings()
     col = colony_client(s)
-    dep = col.create(req.rig, req.kind, req.schedule)
+    # Per-device IP: if the operator supplied an IP (a preauth device with no
+    # local_ip), record it as the device's local_ip tag (we DON'T assume it stays
+    # reachable) and use it as the colony host override. Otherwise colony resolves
+    # the host from the registry (legacy) — see project-preauth-device-workflow.
+    if req.ip and req.device_id:
+        try:
+            mender_client(s).set_tags(req.device_id, {"local_ip": req.ip})
+        except Exception:  # noqa: BLE001
+            pass            # tag is best-effort; the deploy still uses the IP
+    dep = col.create(req.rig, req.kind, req.schedule, host=req.ip)
     did = dep["id"]
     if req.schedule:          # future-dated → don't block; mirror later
         return {"deployment": dep, "mirrored": False, "note": "scheduled; mirror on finish"}
