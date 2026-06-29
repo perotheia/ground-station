@@ -75,14 +75,14 @@ services:
   # where possible. See ground-station/docs/design/gs-ux-design.md §6.
   #   COLONY_DIR    path to the colony repo checkout (default ../colony)
   #   THEIA_WS_DIR  path to the workspace bundle (registry + dist) (default ../theia)
-  #   SSH_KEY       path to the private key authorized on the rigs (default ~/.ssh/id_ed25519)
+  #   SSH_KEY       path to the private key authorized on the rigs (default ~/.ssh/id_rsa)
   colony-api:
     build: "${COLONY_DIR:-../colony}/api"
     container_name: colony-api
     volumes:
       - "${COLONY_DIR:-../colony}:/colony:ro"          # playbooks + bin/colony
       - "${THEIA_WS_DIR:-../theia}:/workspace:ro"        # registry + dist/manifest
-      - "${SSH_KEY:-~/.ssh/id_ed25519}:/root/.ssh/id_ed25519:ro"
+      - "${SSH_KEY:-~/.ssh/id_rsa}:/root/.ssh/id_rsa:ro"
       - colony-journal:/var/lib/colony                   # deployment history
     environment:
       THEIA_WORKSPACE: /workspace
