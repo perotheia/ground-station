@@ -24,9 +24,40 @@ from pydantic import BaseModel
 
 from ..auth import require_key
 from ..clients import mender_client, plane_client, resolve_fleet
+from ..colony_client import colony_client
 from ..settings import settings
 
 router = APIRouter(prefix="/api/planes", tags=["planes"])
+
+
+def _deployed_versions(s) -> set[str]:
+    """The set of release versions that have been DEPLOYED — i.e. LOCKED (UF: a
+    deployed release is immutable; re-iterate = a new version). Union of every
+    Mender deployment's artifact_name (app + runtime-as-artifact) and every colony
+    deployment's runtime_version (base). A failing source just contributes nothing
+    (lock is advisory — never blocks a read)."""
+    import json
+    locked: set[str] = set()
+    try:
+        m = mender_client(s)
+        st, data, _ = m._req("GET", f"{m.dep}?per_page=200")  # noqa: SLF001
+        if st == 200:
+            for d in json.loads(data or b"[]"):
+                an = d.get("artifact_name") or d.get("artifacts")
+                if isinstance(an, list):
+                    locked.update(str(x) for x in an)
+                elif an:
+                    locked.add(str(an))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        for d in colony_client(s).deployments():
+            rv = d.get("runtime_version")
+            if rv:
+                locked.add(str(rv))
+    except Exception:  # noqa: BLE001
+        pass
+    return locked
 
 
 def _app_requires_runtime(s, fleet: str, app: str, version: str) -> str:
@@ -56,12 +87,19 @@ def _device_base_version(m, device_id: str) -> str | None:
 
 @router.get("/runtime")
 def runtime_plane() -> dict:
-    """The runtime vendoring catalog — every published platform release (per ABI)."""
+    """The runtime vendoring catalog — every published platform release (per ABI),
+    each marked `locked` once it's been deployed (UF immutability)."""
     s = settings()
     try:
-        return {"plane": "runtime", "releases": plane_client(s).runtime_catalog()}
+        rel = plane_client(s).runtime_catalog()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"runtime plane: {e}")
+    locked = _deployed_versions(s)
+    for r in rel:
+        if "_error" in r:
+            continue
+        r["locked"] = (r.get("key") or r.get("version")) in locked or str(r.get("version")) in locked
+    return {"plane": "runtime", "releases": rel}
 
 
 @router.get("/apps")
@@ -74,6 +112,7 @@ def apps_plane() -> dict:
         raise HTTPException(status_code=502, detail=f"app plane: {e}")
     # group by fleet → app → versions for the UI's vendoring tree
     pc = plane_client(s)
+    locked = _deployed_versions(s)
     tree: dict[str, dict[str, list[dict]]] = {}
     for a in cat:
         if "_error" in a:
@@ -88,9 +127,34 @@ def apps_plane() -> dict:
             "requires_runtime": a.get("requires_runtime", ""),
             # operator pin (guards deletion) — a .pinned marker in the plane.
             "pinned": pc.is_pinned(fleet, app, str(ver)),
+            # UF lock: a deployed artifact is immutable. The delete/overwrite ACT
+            # disables when locked (re-iterate = a new version, not a clobber).
+            "locked": str(a.get("artifact") or "") in locked or str(ver) in locked,
             "key": a.get("_key"), "files": a.get("files", []),
         })
     return {"plane": "apps", "apps": cat, "tree": tree}
+
+
+@router.get("/roles")
+def roles_plane() -> dict:
+    """The ROLE artifact catalog — `theia release-role` <role>.mender bundles,
+    grouped fleet → version → roles, each marked `locked` when deployed."""
+    s = settings()
+    try:
+        cat = plane_client(s).roles_catalog()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"roles plane: {e}")
+    locked = _deployed_versions(s)
+    tree: dict[str, dict[str, list[dict]]] = {}
+    for r in cat:
+        if "_error" in r:
+            continue
+        fleet, ver = r.get("fleet", "?"), r.get("version", "?")
+        tree.setdefault(fleet, {}).setdefault(ver, []).append({
+            "role": r.get("role"), "key": r.get("key"), "size": r.get("size"),
+            "locked": str(ver) in locked,
+        })
+    return {"plane": "roles", "roles": cat, "tree": tree}
 
 
 class PublishRequest(BaseModel):

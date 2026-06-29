@@ -95,6 +95,7 @@ class PlaneClient:
             config=Config(signature_version="s3v4"), region_name="us-east-1")
         self._runtime = s.s3_runtime_bucket
         self._apps = s.s3_apps_bucket
+        self._roles = s.s3_roles_bucket
 
     def _indexes(self, bucket: str) -> list[dict]:
         out: list[dict] = []
@@ -124,6 +125,29 @@ class PlaneClient:
         """Every published app: {fleet, app, version, artifact, files[]}."""
         return [i for i in self._indexes(self._apps) if i.get("plane") == "app"
                 or "app" in i or "_error" in i]
+
+    def roles_catalog(self) -> list[dict]:
+        """Every published ROLE artifact. The roles plane has NO index.json — it's
+        a tree of `<fleet>/<version>/<role>.mender` (theia release-role). Walk for
+        the .mender objects and derive {fleet, version, role, key, size}."""
+        out: list[dict] = []
+        try:
+            paginator = self._s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self._roles):
+                for obj in page.get("Contents", []) or []:
+                    key = obj["Key"]
+                    if not key.endswith(".mender"):
+                        continue
+                    parts = key.split("/")
+                    # <fleet>/<version>/<role>.mender
+                    fleet = parts[0] if len(parts) >= 3 else ""
+                    version = parts[1] if len(parts) >= 3 else ""
+                    role = parts[-1][:-len(".mender")]
+                    out.append({"plane": "role", "fleet": fleet, "version": version,
+                                "role": role, "key": key, "size": obj.get("Size")})
+        except Exception as e:  # noqa: BLE001
+            out.append({"_error": str(e), "_bucket": self._roles})
+        return out
 
     def presign(self, bucket_kind: str, key: str, expires: int = 3600) -> str:
         bucket = self._runtime if bucket_kind == "runtime" else self._apps

@@ -224,6 +224,95 @@ def create_deployment(req: DeployRequest) -> dict:
         raise HTTPException(status_code=502, detail=f"create deployment: {e}")
 
 
+# ── Phased rollouts (P6): split a group into N sequential sub-groups ───────────
+class RolloutRequest(BaseModel):
+    artifact_name: str
+    group: str | None = None
+    fleet: str | None = None
+    name: str | None = None
+    phases: int = 2                 # split the target into N sequential sub-groups
+    when: str = "now"              # "now" | "scheduled" (scheduled = create paused)
+
+
+def _rollout_targets(m, req) -> list[str]:
+    if req.fleet:
+        return resolve_fleet(m, req.fleet)
+    if req.group:
+        return m.device_ids_in_group(req.group)
+    return []
+
+
+def _chunk(seq: list, n: int) -> list[list]:
+    """Split into n near-equal contiguous chunks (sub-groups). n>=1."""
+    n = max(1, min(n, len(seq) or 1))
+    k, r = divmod(len(seq), n)
+    out, i = [], 0
+    for j in range(n):
+        size = k + (1 if j < r else 0)
+        out.append(seq[i:i + size]); i += size
+    return [c for c in out if c]
+
+
+@router.post("/rollouts", dependencies=[Depends(require_key)])
+def create_rollout(req: RolloutRequest) -> dict:
+    """A PHASED rollout (UF Rollout, trimmed for a lab fleet): split the target
+    group/fleet into N sequential sub-groups, deploy phase 1 NOW, and return the
+    phase plan. Subsequent phases launch via POST /rollouts/{...}/advance — the
+    operator gates progression (no percent thresholds / auto-halt; design §P6).
+    `when=scheduled` builds the plan WITHOUT launching phase 1 (operator advances)."""
+    s = settings()
+    m = mender_client(s)
+    target = req.fleet or req.group
+    if not target:
+        raise HTTPException(status_code=400, detail="need a fleet or group to target")
+    try:
+        devices = _rollout_targets(m, req)
+        if not devices:
+            raise HTTPException(status_code=400,
+                                detail=f"no devices match '{target}'")
+        chunks = _chunk(devices, req.phases)
+        base = req.name or f"theia-{req.artifact_name}-{target}"
+        plan = [{"phase": i + 1, "devices": c, "count": len(c),
+                 "name": f"{base}-p{i + 1}", "deployment_id": None, "status": "queued"}
+                for i, c in enumerate(chunks)]
+        launched = None
+        if req.when != "scheduled" and plan:
+            plan[0]["deployment_id"] = m.create_deployment(
+                plan[0]["name"], req.artifact_name, plan[0]["devices"])
+            plan[0]["status"] = "deploying"
+            launched = plan[0]["deployment_id"]
+        return {"artifact_name": req.artifact_name, "target": target,
+                "phases": len(plan), "total_devices": len(devices),
+                "plan": plan, "launched": launched}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"create rollout: {e}")
+
+
+class AdvanceRequest(BaseModel):
+    artifact_name: str
+    name: str                       # the next phase's deployment name
+    devices: list[str]
+
+
+@router.post("/rollouts/advance", dependencies=[Depends(require_key)])
+def advance_rollout(req: AdvanceRequest) -> dict:
+    """Launch the NEXT phase of a rollout (the operator-gated step). The client
+    holds the phase plan (from create_rollout) and posts the next phase's device
+    list; we create that phase's Mender deployment. Stateless on the server —
+    matches the GS principle (no rollout state DB; the plan lives in the UI)."""
+    s = settings()
+    m = mender_client(s)
+    if not req.devices:
+        raise HTTPException(status_code=400, detail="phase has no devices")
+    try:
+        dep_id = m.create_deployment(req.name, req.artifact_name, req.devices)
+        return {"deployment_id": dep_id, "name": req.name, "count": len(req.devices)}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"advance rollout: {e}")
+
+
 @router.post("/{dep_id}/abort", dependencies=[Depends(require_key)])
 def abort_deployment(dep_id: str) -> dict:
     """Abort an in-flight deployment (the Mender transport-plane cancel). Devices

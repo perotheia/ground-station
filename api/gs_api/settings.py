@@ -29,6 +29,7 @@ class Settings:
     s3_secret_key: str = os.environ.get("MINIO_PASSWORD", "theiaminio")
     s3_runtime_bucket: str = os.environ.get("S3_RUNTIME_BUCKET", "theia-runtime")
     s3_apps_bucket: str = os.environ.get("S3_APPS_BUCKET", "theia-apps")
+    s3_roles_bucket: str = os.environ.get("S3_ROLES_BUCKET", "theia-roles")
 
     # ---- colony-api (the BASE deployment authority) ----
     # gs-api fans /api/deployments out to BOTH Mender (app) and colony-api (base).

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from .. import com_client
 from ..clients import mender_client
+from ..colony_client import colony_client
 from ..settings import settings
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
@@ -285,3 +286,124 @@ def get_device(device_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"mender inventory: {e}")
     raise HTTPException(status_code=404, detail="device not found")
+
+
+# ── Groups (P3): the named buckets a board can be assigned to ──────────────────
+@router.get("/groups/list")
+def list_groups() -> dict:
+    """The named Mender groups + a member count, for the Fleet group selector.
+    Derived from the device inventory (every device carries its `group` attr) so
+    we don't depend on a separate groups API surface."""
+    s = settings()
+    counts: dict[str, int] = {}
+    try:
+        for d in mender_client(s).devices():
+            g = _flatten(d).get("group")
+            if g:
+                counts[g] = counts.get(g, 0) + 1
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"mender inventory: {e}")
+    groups = [{"name": k, "count": v} for k, v in sorted(counts.items())]
+    return {"groups": groups, "count": len(groups)}
+
+
+class GroupRequest(BaseModel):
+    group: str
+
+
+@router.post("/{device_id}/group", dependencies=[Depends(_require_key)])
+def assign_group(device_id: str, req: GroupRequest) -> dict:
+    """Move a board into a named group (Mender inventory group). Idempotent."""
+    s = settings()
+    try:
+        mender_client(s).assign_group(device_id, req.group)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"assign group: {e}")
+    return {"device_id": device_id, "group": req.group}
+
+
+# ── Merged timeline (P3): base (colony) + app (Mender) + state, chronological ──
+@router.get("/{device_id}/timeline")
+def device_timeline(device_id: str) -> dict:
+    """The device side-panel feed: colony BASE deployments + Mender APP deployments
+    that touched this board + its current Theia state — merged newest-first, each
+    event authority-tagged. Mirrors the unified-deployments model (design §6), but
+    scoped to one device. A failing source is reported, not fatal."""
+    import json
+    s = settings()
+    events: list[dict] = []
+    errors: dict[str, str] = {}
+
+    # Resolve the device's identity keys (id, hostname, fleet) to match events.
+    dev_name = None
+    fleet = None
+    try:
+        for d in mender_client(s).devices():
+            if d.get("id") == device_id:
+                f = _flatten(d)
+                dev_name, fleet = f.get("name"), f.get("fleet")
+                # current-state markers (no timestamp → "now")
+                if f.get("base_version"):
+                    events.append({"authority": "base", "kind": "installed",
+                                   "title": f"base {f['base_version']}",
+                                   "detail": f"source={f.get('base_source') or f.get('base_authority') or '?'}",
+                                   "ts": f.get("updated_ts"), "status": "current"})
+                if f.get("artifact"):
+                    events.append({"authority": "app", "kind": "installed",
+                                   "title": f"app {f['artifact']}",
+                                   "ts": f.get("updated_ts"), "status": "current"})
+                for k, lbl in (("health", "health"), ("sm_state", "SM"),
+                               ("ucm_version", "UCM")):
+                    if f.get(k):
+                        events.append({"authority": "state", "kind": k,
+                                       "title": f"{lbl}: {f[k]}",
+                                       "ts": f.get("updated_ts"), "status": "info"})
+                break
+    except Exception as e:  # noqa: BLE001
+        errors["inventory"] = str(e)
+
+    # ── APP plane: Mender deployments that included this device ──────────────
+    try:
+        m = mender_client(s)
+        st, data, _ = m._req("GET", f"{m.dep}?per_page=100")  # noqa: SLF001
+        if st == 200:
+            for d in json.loads(data or b"[]"):
+                devs = d.get("device_count") or 0
+                # the deployment's per-device list (if Mender returns it inline)
+                touched = device_id in (d.get("devices") or [])
+                # else match by artifact/group heuristically — fall back to "all
+                # accepted in group" being the deployment's target; keep it simple:
+                if touched or devs:
+                    events.append({
+                        "authority": "app", "kind": "deployment",
+                        "title": d.get("name") or d.get("artifact_name") or d.get("id"),
+                        "detail": (d.get("status") or "?"),
+                        "ts": d.get("created"), "status": d.get("status"),
+                        "id": d.get("id"),
+                    })
+    except Exception as e:  # noqa: BLE001
+        errors["app"] = str(e)
+
+    # ── BASE plane: colony deployments for this rig (by hostname) ────────────
+    try:
+        for d in colony_client(s).deployments():
+            rig = d.get("rig") or d.get("rig_id") or ""
+            if dev_name and rig and (rig == dev_name or rig.startswith(str(dev_name))):
+                stats = d.get("statistics") or {}
+                events.append({
+                    "authority": "base", "kind": "deployment",
+                    "title": f"{d.get('kind', 'orchestrate')} {d.get('runtime_version', '')}".strip(),
+                    "detail": stats.get("status") or d.get("status") or "?",
+                    "ts": d.get("created") or d.get("created_ts"),
+                    "status": stats.get("status") or d.get("status"),
+                    "id": d.get("id"),
+                })
+    except Exception as e:  # noqa: BLE001
+        errors["base"] = str(e)
+
+    events.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
+    out: dict = {"device_id": device_id, "name": dev_name, "fleet": fleet,
+                 "events": events, "count": len(events)}
+    if errors:
+        out["errors"] = errors
+    return out

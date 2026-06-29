@@ -25,6 +25,7 @@ export const api = {
     call('/deployments', { method: 'POST', body: JSON.stringify({ artifact_name, group, name }) }),
   runtimePlane: () => call('/planes/runtime'),
   appsPlane: () => call('/planes/apps'),
+  rolesPlane: () => call('/planes/roles'),
   publishApp: (fleet, app, version, deploy) =>
     call('/planes/apps/publish', {
       method: 'POST',
@@ -33,6 +34,11 @@ export const api = {
   // rollout — both planes for one deployment (Mender transport + UCM/SM ECU)
   rollout: (depId) => call(`/deployments/${depId}/rollout`),
   abort: (depId) => call(`/deployments/${depId}/abort`, { method: 'POST' }),
+  // ── Phased rollouts (P6): split a group into N sequential sub-groups ───────
+  createRollout: (body) =>
+    call('/deployments/rollouts', { method: 'POST', body: JSON.stringify(body) }),
+  advanceRollout: (artifact_name, name, devices) =>
+    call('/deployments/rollouts/advance', { method: 'POST', body: JSON.stringify({ artifact_name, name, devices }) }),
   // per-device ECU lifecycle
   ucmProgress: (deviceId) => call(`/ucm/${deviceId}/progress`),
 
@@ -44,6 +50,11 @@ export const api = {
   // pin guards a device from deletion (unpin before delete)
   pinDevice: (id, pinned) =>
     call(`/devices/${id}/pin`, { method: 'POST', body: JSON.stringify({ pinned }) }),
+  // ── Fleet panel (P3): groups + per-device merged timeline ─────────────────
+  groups: () => call('/devices/groups/list'),
+  assignGroup: (id, group) =>
+    call(`/devices/${id}/group`, { method: 'POST', body: JSON.stringify({ group }) }),
+  deviceTimeline: (id) => call(`/devices/${id}/timeline`),
 
   // ── BASE deployment (colony) ──────────────────────────────────────────────
   deployBase: (rig, kind = 'orchestrate') =>
