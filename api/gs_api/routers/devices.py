@@ -289,6 +289,47 @@ def decommission(device_id: str) -> dict:
     return {"device_id": device_id, "decommissioned": True}
 
 
+# ── Enrolment helpers (Create New Target modal) ──────────────────────────────
+@router.get("/probe")
+def probe(host: str) -> dict:
+    """SSH-probe a host for its stable identity (MAC + hostname) to PREFILL the
+    Create-Target modal. gs-api has no SSH; colony-api does (the rig key), so we
+    proxy to it. The operator types a Host IP → reload → Controller ID=MAC,
+    Name=hostname."""
+    from ..colony_client import colony_client
+    s = settings()
+    col = colony_client(s)
+    st, data = col._req("GET", f"/probe?host={host}")  # noqa: SLF001
+    if st != 200:
+        import json as _j
+        try:
+            detail = _j.loads(data).get("detail", data.decode(errors="replace"))
+        except Exception:  # noqa: BLE001
+            detail = data.decode(errors="replace")[:200]
+        raise HTTPException(status_code=502, detail=f"probe: {detail}")
+    import json as _j
+    return _j.loads(data or b"{}")
+
+
+@router.get("/types")
+def device_types() -> dict:
+    """The Type dropdown options — device_types seen in Mender inventory UNION the
+    known Theia roles. STATELESS: derived live from Mender, not stored in GS."""
+    s = settings()
+    known = {"theia-rig", "theia-gateway"}
+    seen = set()
+    try:
+        for d in mender_client(s).devices():
+            f = _flatten(d)
+            if f.get("fleet"):
+                for tv in str(f["fleet"]).split(","):
+                    if tv.strip():
+                        seen.add(tv.strip())
+    except Exception:  # noqa: BLE001
+        pass            # types are advisory; fall back to the known set
+    return {"types": sorted(known | seen)}
+
+
 # Registered LAST so the static routes (/pending, /connect) win the path match —
 # FastAPI matches in declaration order, and /{device_id} is a catch-all.
 @router.get("/{device_id}")

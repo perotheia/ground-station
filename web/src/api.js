@@ -50,6 +50,9 @@ export const api = {
   // pin guards a device from deletion (unpin before delete)
   pinDevice: (id, pinned) =>
     call(`/devices/${id}/pin`, { method: 'POST', body: JSON.stringify({ pinned }) }),
+  // ── Create New Target (enrolment) — SSH-probe a host + the Type options ───
+  probe: (host) => call(`/devices/probe?host=${encodeURIComponent(host)}`),
+  deviceTypes: () => call('/devices/types'),
   // ── Fleet panel (P3): groups + per-device merged timeline ─────────────────
   groups: () => call('/devices/groups/list'),
   assignGroup: (id, group) =>
