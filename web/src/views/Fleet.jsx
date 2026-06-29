@@ -157,49 +157,114 @@ function GroupCell({ device, groups, onChanged }) {
   )
 }
 
-// One device row — extracted so it can render flat or under a group header.
-function DeviceRow({ d, groups, onSelect, reload }) {
+// One device row — checkbox + the device columns. Renders flat or under a header.
+function DeviceRow({ d, groups, onSelect, reload, checked, onCheck }) {
   return (
-    <tr className="hover:bg-edge/20 cursor-pointer" onClick={() => onSelect(d)}>
-      <td className="cell font-mono text-xs">{d.name || d.id?.slice(0, 12)}</td>
-      <td className="cell text-xs">{d.fleet || <span className="text-muted">—</span>}</td>
+    <tr className="hover:bg-edge/20 cursor-pointer">
+      <td className="cell" onClick={(e) => e.stopPropagation()}>
+        <input type="checkbox" checked={checked} onChange={(e) => onCheck(d.id, e.target.checked)} />
+      </td>
+      <td className="cell font-mono text-xs" onClick={() => onSelect(d)}>{d.name || d.id?.slice(0, 12)}</td>
+      <td className="cell text-xs" onClick={() => onSelect(d)}>{d.fleet || <span className="text-muted">—</span>}</td>
       <td className="cell text-xs"><GroupCell device={d} groups={groups} onChanged={reload} /></td>
-      <td className="cell text-xs font-mono">
+      <td className="cell text-xs font-mono" onClick={() => onSelect(d)}>
         {d.base_version || <span className="text-muted">—</span>}
         {d.base_source === 'mirror' && <span title="from Mender mirror tag, not a live supervisor read" className="ml-1 text-amber-400">◐</span>}
       </td>
-      <td className="cell text-xs">{d.artifact || <span className="text-muted">—</span>}</td>
-      <td className="cell text-xs"><Pill v={d.health} /></td>
-      <td className="cell text-xs"><Pill v={d.sm_state} /></td>
-      <td className="cell text-xs"><Pill v={d.ucm_version} /></td>
-      <td className="cell flex items-center gap-2 text-xs">
+      <td className="cell text-xs" onClick={() => onSelect(d)}>{d.artifact || <span className="text-muted">—</span>}</td>
+      <td className="cell text-xs" onClick={() => onSelect(d)}><Pill v={d.health} /></td>
+      <td className="cell text-xs" onClick={() => onSelect(d)}><Pill v={d.sm_state} /></td>
+      <td className="cell text-xs" onClick={() => onSelect(d)}><Pill v={d.ucm_version} /></td>
+      <td className="cell flex items-center gap-2 text-xs" onClick={() => onSelect(d)}>
         <Dot s={d.connected} /><span className="text-muted">{d.connected}</span>
       </td>
     </tr>
   )
 }
 
-// The grouping AXIS for the device list. Group = explicit (static Mender group,
-// written membership). Fleet/App = IMPLICIT (client-side, derived from the live
-// inventory; these become Mender DYNAMIC groups once reporting reindex is wired).
 const GROUP_AXES = {
   none: () => null,
   Fleet: (d) => d.fleet || '(no fleet)',
   App: (d) => d.artifact || '(no app)',
   Group: (d) => d.group || '(ungrouped)',
 }
+const STATUSES = ['accepted', 'pending', 'preauthorized', 'rejected', 'any']
+
+// Assign N selected devices to a static group (existing or new) — the Mender
+// "check devices -> Group" action. Group membership is written into Mender.
+function GroupDialog({ ids, groups, onClose, onDone }) {
+  const [group, setGroup] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const apply = async () => {
+    if (!group.trim()) { setErr('enter or pick a group name'); return }
+    setBusy(true); setErr(null)
+    try { for (const id of ids) await api.assignGroup(id, group.trim()); onDone() }
+    catch (e) { setErr(e.message) }
+    setBusy(false)
+  }
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="card w-[26rem] p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center mb-3"><h3 className="font-semibold">Add {ids.length} device(s) to group</h3>
+          <button className="btn-ghost ml-auto" onClick={onClose}>✕</button></div>
+        <input className="input w-full mb-2 text-sm" placeholder="group name (new or existing)"
+               list="grouplist" value={group} onChange={(e) => setGroup(e.target.value)} />
+        <datalist id="grouplist">{groups.map((g) => <option key={g.name} value={g.name} />)}</datalist>
+        {err && <div className="text-xs text-red-400 mb-2">{err}</div>}
+        <button className="btn w-full" disabled={busy} onClick={apply}>{busy ? '…' : 'Add to group'}</button>
+      </div>
+    </div>
+  )
+}
+
+// Preauthorize a device before it checks in: identity MAC + pubkey → devauth.
+function PreauthorizeDialog({ onClose, onDone }) {
+  const [mac, setMac] = useState(''); const [pubkey, setPubkey] = useState('')
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState(null)
+  const save = async () => {
+    if (!mac.trim() || !pubkey.trim()) { setErr('MAC and public key are required'); return }
+    setBusy(true); setErr(null)
+    try { await api.preauthorize(mac.trim(), pubkey.trim()); onDone() }
+    catch (e) { setErr(e.message) }
+    setBusy(false)
+  }
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="card w-[30rem] p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center mb-3"><h3 className="font-semibold" style={{ color: '#4A90E2' }}>Preauthorize a device</h3>
+          <button className="btn-ghost ml-auto" onClick={onClose}>✕</button></div>
+        <p className="text-xs text-muted mb-3">Submit a device's identity + public key BEFORE it checks in.
+          When the board first connects with this MAC + key, Mender auto-accepts it.</p>
+        <label className="block text-xs text-muted mb-1">MAC (identity) <span className="text-red-400">*</span></label>
+        <input className="input w-full mb-3 text-sm font-mono" placeholder="dc:a6:32:.." value={mac} onChange={(e) => setMac(e.target.value)} />
+        <label className="block text-xs text-muted mb-1">Public key (PEM) <span className="text-red-400">*</span></label>
+        <textarea className="input w-full text-xs h-24 font-mono" placeholder="-----BEGIN PUBLIC KEY-----" value={pubkey} onChange={(e) => setPubkey(e.target.value)} />
+        {err && <div className="text-xs text-red-400 mt-2">{err}</div>}
+        <button className="btn w-full mt-3" disabled={busy} onClick={save}>{busy ? '…' : '💾 Preauthorize'}</button>
+      </div>
+    </div>
+  )
+}
 
 export function Fleet() {
-  const { data, loading, error, refresh } = usePoll(() => api.devices(), [], 6000)
+  const [status, setStatus] = useState('accepted')
+  const { data, loading, error, refresh } = usePoll(() => api.devices(null, status), [status], 6000)
   const { data: gdata, refresh: grefresh } = usePoll(() => api.groups(), [], 30000)
-  const [showConnect, setShowConnect] = useState(false)
+  const [showConnect, setShowConnect] = useState(false)     // SSH-probe Create-Target modal
+  const [showPreauth, setShowPreauth] = useState(false)
+  const [showGroup, setShowGroup] = useState(false)
+  const [connectMenu, setConnectMenu] = useState(false)
   const [selected, setSelected] = useState(null)
   const [groupBy, setGroupBy] = useState('none')
+  const [checked, setChecked] = useState({})                // id -> bool
   const devices = data?.devices || []
   const groups = gdata?.groups || []
   const reload = () => { refresh(); grefresh() }
+  const checkedIds = Object.keys(checked).filter((k) => checked[k])
+  const onCheck = (id, v) => setChecked((c) => ({ ...c, [id]: v }))
+  const clearChecks = () => setChecked({})
 
-  // segment devices by the chosen axis (sorted by group key)
   const keyer = GROUP_AXES[groupBy] || GROUP_AXES.none
   const sections = useMemo(() => {
     if (groupBy === 'none') return null
@@ -208,31 +273,53 @@ export function Fleet() {
     return Object.keys(by).sort().map((k) => ({ key: k, rows: by[k] }))
   }, [devices, groupBy])
 
+  const renderRows = (list) => list.map((d) => (
+    <DeviceRow key={d.id} d={d} groups={groups} onSelect={setSelected} reload={reload}
+               checked={!!checked[d.id]} onCheck={onCheck} />
+  ))
+
   return (
     <div className="pane h-full">
       <div className="pane-head">
         Fleet
-        <span className="text-muted font-normal text-xs ml-2">{devices.length} device(s) · {groups.length} group(s)</span>
+        <span className="text-muted font-normal text-xs ml-2">{devices.length} · {groups.length} group(s)</span>
+        <span className="ml-3 text-xs text-muted">Status:</span>
+        <select className="bg-transparent text-xs ml-1 outline-none cursor-pointer text-slate-200"
+                value={status} onChange={(e) => { setStatus(e.target.value); clearChecks() }}>
+          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
         <span className="ml-3 text-xs text-muted">Group by:</span>
         <select className="bg-transparent text-xs ml-1 outline-none cursor-pointer text-slate-200"
                 value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
           {Object.keys(GROUP_AXES).map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
-        <span className="ml-auto flex gap-1">
-          <button className="btn" onClick={() => setShowConnect(true)}>Connect Device</button>
+        <span className="ml-auto flex gap-1 items-center">
+          {checkedIds.length > 0 &&
+            <button className="btn" onClick={() => setShowGroup(true)}>Group ({checkedIds.length})</button>}
+          <span className="relative">
+            <button className="btn" onClick={() => setConnectMenu((m) => !m)}>Connect Device ▾</button>
+            {connectMenu && (
+              <div className="absolute right-0 mt-1 card p-1 z-50 w-52 text-sm" onMouseLeave={() => setConnectMenu(false)}>
+                <button className="block w-full text-left px-2 py-1 hover:bg-edge/40 rounded"
+                        onClick={() => { setConnectMenu(false); setShowConnect(true) }}>Connect a new device</button>
+                <button className="block w-full text-left px-2 py-1 hover:bg-edge/40 rounded"
+                        onClick={() => { setConnectMenu(false); setShowPreauth(true) }}>Preauthorize a device</button>
+              </div>
+            )}
+          </span>
           <button className="btn-ghost" onClick={reload}>Refresh</button>
         </span>
       </div>
       {error && (
         <div className="bg-red-500/15 border-b border-red-500/40 text-red-300 text-xs px-3 py-2">
-          ⚠ Can't reach Mender inventory — the fleet can't be read (devices are NOT
-          deleted; this is a connectivity/auth error). Detail: {error}
+          ⚠ Can't reach Mender — the fleet can't be read (devices are NOT deleted; connectivity/auth error). {error}
         </div>
       )}
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
             <tr>
+              <th className="th w-6"></th>
               <th className="th">Device</th><th className="th">Fleet</th><th className="th">Group</th>
               <th className="th">Base runtime</th><th className="th">App</th>
               <th className="th">Health</th><th className="th">SM</th><th className="th">UCM</th>
@@ -240,30 +327,24 @@ export function Fleet() {
             </tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
-            {loading && !data && <tr><td className="cell text-muted" colSpan={9}>loading…</td></tr>}
-            {error && <tr><td className="cell text-red-300" colSpan={9}>fleet unavailable (Mender error) — see banner above</td></tr>}
-            {!loading && !error && devices.length === 0 && <tr><td className="cell text-muted" colSpan={9}>no devices enrolled</td></tr>}
-            {/* flat list */}
-            {!sections && devices.map((d) => (
-              <DeviceRow key={d.id} d={d} groups={groups} onSelect={setSelected} reload={reload} />
-            ))}
-            {/* grouped: a header row per section, then its devices */}
+            {loading && !data && <tr><td className="cell text-muted" colSpan={10}>loading…</td></tr>}
+            {error && <tr><td className="cell text-red-300" colSpan={10}>fleet unavailable — see banner</td></tr>}
+            {!loading && !error && devices.length === 0 && <tr><td className="cell text-muted" colSpan={10}>no devices ({status})</td></tr>}
+            {!sections && renderRows(devices)}
             {sections && sections.map((s) => (
               <React.Fragment key={s.key}>
-                <tr className="bg-edge/30">
-                  <td className="cell text-xs font-semibold text-slate-200" colSpan={9}>
-                    {groupBy}: {s.key} <span className="text-muted font-normal">· {s.rows.length}</span>
-                  </td>
-                </tr>
-                {s.rows.map((d) => (
-                  <DeviceRow key={d.id} d={d} groups={groups} onSelect={setSelected} reload={reload} />
-                ))}
+                <tr className="bg-edge/30"><td className="cell text-xs font-semibold text-slate-200" colSpan={10}>
+                  {groupBy}: {s.key} <span className="text-muted font-normal">· {s.rows.length}</span></td></tr>
+                {renderRows(s.rows)}
               </React.Fragment>
             ))}
           </tbody>
         </table>
       </div>
       {showConnect && <ConnectDialog groups={groups} onClose={() => { setShowConnect(false); reload() }} />}
+      {showPreauth && <PreauthorizeDialog onClose={() => setShowPreauth(false)} onDone={() => { setShowPreauth(false); reload() }} />}
+      {showGroup && <GroupDialog ids={checkedIds} groups={groups} onClose={() => setShowGroup(false)}
+                                 onDone={() => { setShowGroup(false); clearChecks(); reload() }} />}
       {selected && <Timeline device={selected} onClose={() => setSelected(null)} />}
     </div>
   )

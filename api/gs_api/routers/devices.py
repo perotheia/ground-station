@@ -80,25 +80,70 @@ def _flatten(dev: dict) -> dict:
 
 
 @router.get("")
-def list_devices(group: str | None = Query(default=None)) -> dict:
-    """All enrolled devices (optionally filtered to a Mender group)."""
+def list_devices(group: str | None = Query(default=None),
+                 status: str = Query(default="accepted")) -> dict:
+    """The fleet — sourced from deviceauth v2 (EVERY device + its auth status), so
+    pending/preauthorized/rejected show too (Mender's single-list model). Accepted
+    devices are enriched with their Mender inventory (fleet/base/app/health). The
+    `status` filter: any|accepted|pending|preauthorized|rejected. A `group` filter
+    narrows to a static group's members (accepted only)."""
     s = settings()
+    m = mender_client(s)
     try:
-        raw = mender_client(s).devices(group)
+        auth = m.auth_devices()                 # devauth v2: id, identity_data, status, auth_sets
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"mender inventory: {e}")
-    devices = [_flatten(d) for d in raw]
+        raise HTTPException(status_code=502, detail=f"mender deviceauth: {e}")
+    # inventory (accepted devices' attributes), keyed by device id — best-effort.
+    inv_by_id: dict = {}
+    group_ids: set | None = None
+    try:
+        for d in m.devices(group):
+            inv_by_id[d.get("id")] = d
+        if group:
+            group_ids = set(inv_by_id.keys())   # the group's members (inventory)
+    except Exception:  # noqa: BLE001
+        pass            # inventory enrichment is best-effort; devauth is the spine
+    devices = []
+    for a in auth:
+        st = a.get("status")
+        if status != "any" and st != status:
+            continue
+        if group_ids is not None and a.get("id") not in group_ids:
+            continue
+        inv = inv_by_id.get(a.get("id"))
+        d = _flatten(inv) if inv else {
+            "id": a.get("id"),
+            "mac": (a.get("identity_data") or {}).get("mac"),
+            "name": (a.get("identity_data") or {}).get("mac"),
+            "fleet": None, "group": None, "attributes": {},
+        }
+        d["auth_status"] = st                   # accepted|pending|preauthorized|rejected
+        # the first auth-set id (needed to accept/reject this device)
+        asets = a.get("auth_sets") or []
+        d["auth_set_id"] = asets[0]["id"] if asets else None
+        devices.append(d)
     # ── connected state: cross-reference Mender (accepted) with the Observability
     #    cluster (ListMachines). Two states, no can't-tell — the whole fleet runs
     #    ListMachines: mender+com (present in the cluster) or mender-only (accepted
     #    but the supervisor isn't published — a real health gap). (com-only boards
     #    aren't in Mender inventory → they surface via /pending.) ────────────────
-    observed = _observed()              # cluster view (raises 502 on fault)
+    # Observability cross-ref is BEST-EFFORT now (the list is devauth-sourced; a
+    # cluster fault or a non-accepted device must not sink the fleet list).
+    try:
+        observed = _observed()
+    except Exception:  # noqa: BLE001
+        observed = {"by_inst": {}, "by_name": {}, "rel_by_inst": {}, "rel_by_name": {}}
     by_inst = observed["by_inst"]
     by_name = observed["by_name"]
     rel_by_inst = observed["rel_by_inst"]
     rel_by_name = observed["rel_by_name"]
     for d in devices:
+        # non-accepted devices (pending/preauthorized/rejected) have no cluster
+        # presence — their connected state IS their auth status.
+        if d.get("auth_status") and d["auth_status"] != "accepted":
+            d["connected"] = d["auth_status"]
+            d["base_source"] = None
+            continue
         attrs = d.get("attributes", {}) or {}
         # 1. by INSTANCE (authoritative): the device's machine_instance tag
         inst = attrs.get("machine_instance")
@@ -156,6 +201,25 @@ def _observed() -> dict:
         "rel_by_name": {(m.get("machine_name") or m["name"]): m.get("release_version", "")
                         for m in machines},
     }
+
+
+class PreauthorizeRequest(BaseModel):
+    mac: str                         # the device's identity_data.mac
+    pubkey: str                      # its public key (PEM)
+    name: str | None = None          # optional operator display name (tag, applied on accept)
+
+
+@router.post("/preauthorize", dependencies=[Depends(_require_key)])
+def preauthorize(req: PreauthorizeRequest) -> dict:
+    """Pre-authorize a device BEFORE it checks in: submit identity_data (MAC) +
+    pubkey to devauth. When the real board first connects with that identity+key
+    Mender auto-accepts it. (Connect option 2, vs the SSH-probe 'connect new'.)"""
+    s = settings()
+    try:
+        r = mender_client(s).preauthorize({"mac": req.mac}, req.pubkey)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"preauthorize: {e}")
+    return {"mac": req.mac, "status": "preauthorized", **r}
 
 
 @router.get("/pending")

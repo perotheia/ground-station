@@ -229,6 +229,29 @@ class Mender:
             raise RuntimeError(f"accept [{st}]: {data.decode(errors='replace')[:200]}")
         return True
 
+    def set_auth_status(self, device_id: str, auth_set_id: str, status: str) -> bool:
+        """Set an auth-set's status (accepted|rejected|dismissed|preauthorized) —
+        the generic form of accept_device. Mender devauth v2."""
+        st, data, _ = self._req(
+            "PUT",
+            f"/api/management/v2/devauth/devices/{device_id}/auth/{auth_set_id}/status",
+            body={"status": status})
+        if st not in (204, 200):
+            raise RuntimeError(f"set_auth_status [{st}]: {data.decode(errors='replace')[:200]}")
+        return True
+
+    def preauthorize(self, identity_data: dict, pubkey: str) -> dict:
+        """Pre-authorize a device BEFORE it checks in (devauth v2): submit its
+        identity_data (e.g. {"mac": ...}) + public key. When the real device first
+        connects with that identity+key it is auto-accepted (status preauthorized →
+        accepted). POST /api/management/v2/devauth/devices."""
+        st, data, hdrs = self._req(
+            "POST", "/api/management/v2/devauth/devices",
+            body={"identity_data": identity_data, "pubkey": pubkey})
+        if st not in (201, 200):
+            raise RuntimeError(f"preauthorize [{st}]: {data.decode(errors='replace')[:300]}")
+        return {"location": hdrs.get("Location", ""), "status": "preauthorized"}
+
     def decommission_device(self, device_id: str) -> bool:
         """Remove the device (deviceauth) — the inverse of accept."""
         st, data, _ = self._req(

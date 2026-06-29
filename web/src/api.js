@@ -17,7 +17,13 @@ async function call(path, opts = {}) {
 export const api = {
   config: () => call('/config'),
   health: () => call('/health'),
-  devices: (group) => call(`/devices${group ? `?group=${encodeURIComponent(group)}` : ''}`),
+  devices: (group, status) => {
+    const q = new URLSearchParams()
+    if (group) q.set('group', group)
+    if (status) q.set('status', status)
+    const s = q.toString()
+    return call(`/devices${s ? `?${s}` : ''}`)
+  },
   deployments: () => call('/deployments'),
   deployment: (id) => call(`/deployments/${id}`),
   artifacts: () => call('/deployments/artifacts/list'),
@@ -55,6 +61,8 @@ export const api = {
   deviceTypes: () => call('/devices/types'),
   // ── Fleet panel (P3): groups + per-device merged timeline ─────────────────
   groups: () => call('/devices/groups/list'),
+  preauthorize: (mac, pubkey, name) =>
+    call('/devices/preauthorize', { method: 'POST', body: JSON.stringify({ mac, pubkey, name }) }),
   assignGroup: (id, group) =>
     call(`/devices/${id}/group`, { method: 'POST', body: JSON.stringify({ group }) }),
   removeGroup: (id, group) =>
