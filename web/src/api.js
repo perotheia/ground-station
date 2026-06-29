@@ -59,6 +59,8 @@ export const api = {
   // ── Create New Target (enrolment) — SSH-probe a host + the Type options ───
   probe: (host) => call(`/devices/probe?host=${encodeURIComponent(host)}`),
   deviceTypes: () => call('/devices/types'),
+  setIdentity: (host, controller_id) =>
+    call('/devices/set-identity', { method: 'POST', body: JSON.stringify({ host, controller_id }) }),
   // ── Fleet panel (P3): groups + per-device merged timeline ─────────────────
   groups: () => call('/devices/groups/list'),
   preauthorize: (controller_id, pubkey, name, fleet, description) =>

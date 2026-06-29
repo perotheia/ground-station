@@ -5,7 +5,8 @@ import { api } from '../api'
 // "Connect a new device" and the Deployment board + icon.
 export function CreateTargetModal({ onClose, onCreated }) {
   const [host, setHost] = useState('')          // Host IP to probe
-  const [controllerId, setControllerId] = useState('')  // = MAC (Mender identity)
+  const [controllerId, setControllerId] = useState('')  // = UUID (mender identity we set on the device)
+  const [probedHost, setProbedHost] = useState('')
   const [name, setName] = useState('')
   const [type, setType] = useState('')
   const [desc, setDesc] = useState('')
@@ -22,8 +23,9 @@ export function CreateTargetModal({ onClose, onCreated }) {
     setBusy(true); setErr(null)
     try {
       const r = await api.probe(host.trim())
-      setControllerId(r.mac || '')
+      setControllerId(r.controller_id || '')   // UUID identity (consistent w/ preauth)
       setName(r.hostname || '')
+      setProbedHost(host.trim())
     } catch (e) { setErr(e.message) }
     setBusy(false)
   }
@@ -33,6 +35,8 @@ export function CreateTargetModal({ onClose, onCreated }) {
     try {
       // enrol = accept the pending Mender auth-set by MAC + set the operator name
       // + the device_type (Type). Description is an optional tag.
+      // set the device's mender identity to our UUID so accept-by-UUID matches
+      if (probedHost) await api.setIdentity(probedHost, controllerId.trim())
       await api.connect(controllerId.trim(), type || undefined, undefined, name || undefined)
       onCreated()
     } catch (e) { setErr(e.message) }

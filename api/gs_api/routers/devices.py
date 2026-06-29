@@ -470,6 +470,30 @@ def probe(host: str) -> dict:
     return _j.loads(data or b"{}")
 
 
+class SetIdentityRequest(BaseModel):
+    host: str
+    controller_id: str
+
+
+@router.post("/set-identity", dependencies=[Depends(_require_key)])
+def set_identity(req: SetIdentityRequest) -> dict:
+    """Set a reachable device's mender IDENTITY to the UUID Controller ID (so
+    Mender matches by device_id — consistent with preauth). Proxies to colony-api
+    (it has the SSH key); colony writes the identity script + restarts mender-auth."""
+    from ..colony_client import colony_client
+    import json as _j
+    s = settings()
+    st, data = colony_client(s)._req("POST", "/set-identity",  # noqa: SLF001
+                                     {"host": req.host, "controller_id": req.controller_id})
+    if st != 200:
+        try:
+            why = _j.loads(data).get("detail", "")
+        except Exception:  # noqa: BLE001
+            why = data.decode(errors="replace")[:160]
+        raise HTTPException(status_code=502, detail=f"set-identity: {why}")
+    return _j.loads(data or b"{}")
+
+
 @router.get("/types")
 def device_types() -> dict:
     """The Type dropdown options — device_types seen in Mender inventory UNION the
