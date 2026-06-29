@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { api } from './api'
 import { Deployment } from './views/Deployment'
-import { Deployments } from './views/Deployments'
 import { Releases } from './views/Releases'
 import { Rollouts } from './views/Rollouts'
 import { Fleet } from './views/Fleet'
@@ -13,7 +12,6 @@ const NAV = [
   { id: 'fleet', label: 'Fleet', icon: '▤' },
   { id: 'releases', label: 'Releases', icon: '◈' },
   { id: 'rollouts', label: 'Rollouts', icon: '⟳' },
-  { id: 'deployments', label: 'History', icon: '≡' },
 ]
 
 const TITLES = {
@@ -21,7 +19,6 @@ const TITLES = {
   fleet: 'Fleet',
   releases: 'Releases & Distributions',
   rollouts: 'Rollouts',
-  deployments: 'Deployment History',
 }
 
 export default function App() {
@@ -92,7 +89,6 @@ export default function App() {
           {view === 'fleet' && <Fleet />}
           {view === 'releases' && <Releases />}
           {view === 'rollouts' && <Rollouts />}
-          {view === 'deployments' && <Deployments />}
         </main>
       </div>
     </div>

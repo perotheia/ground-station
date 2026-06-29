@@ -96,6 +96,7 @@ class PlaneClient:
         self._runtime = s.s3_runtime_bucket
         self._apps = s.s3_apps_bucket
         self._roles = s.s3_roles_bucket
+        self._dists = s.s3_distributions_bucket
 
     def _indexes(self, bucket: str) -> list[dict]:
         out: list[dict] = []
@@ -125,6 +126,32 @@ class PlaneClient:
         """Every published app: {fleet, app, version, artifact, files[]}."""
         return [i for i in self._indexes(self._apps) if i.get("plane") == "app"
                 or "app" in i or "_error" in i]
+
+    def distributions_catalog(self) -> list[dict]:
+        """Every Distribution (bundle): index.json under theia-distributions/
+        <name>/<ver>/. {name, version, apps:[{fleet,app,version}], runtime_version}.
+        runtime_version is ABI-AGNOSTIC (resolved per-rig at deploy)."""
+        return [i for i in self._indexes(self._dists)
+                if i.get("plane") == "distribution" or "apps" in i or "_error" in i]
+
+    def save_distribution(self, name: str, version: str, dist: dict) -> str:
+        key = f"{name}/{version}/index.json"
+        body = json.dumps({"plane": "distribution", "name": name,
+                           "version": version, **dist}).encode()
+        self._s3.put_object(Bucket=self._dists, Key=key, Body=body,
+                            ContentType="application/json")
+        return key
+
+    def delete_distribution(self, name: str, version: str) -> int:
+        if not (name and version):
+            raise ValueError("delete_distribution: name/version required")
+        pfx = f"{name}/{version}/"
+        paginator = self._s3.get_paginator("list_objects_v2")
+        keys = [o["Key"] for page in paginator.paginate(Bucket=self._dists, Prefix=pfx)
+                for o in page.get("Contents", [])]
+        for k in keys:
+            self._s3.delete_object(Bucket=self._dists, Key=k)
+        return len(keys)
 
     def roles_catalog(self) -> list[dict]:
         """Every published ROLE artifact. The roles plane has NO index.json — it's
@@ -179,7 +206,12 @@ class PlaneClient:
 
     def delete_app(self, fleet: str, app: str, version: str) -> int:
         """Delete every object under the app version's prefix. Returns the count."""
+        if not (fleet and app and version):
+            raise ValueError("delete_app: fleet/app/version all required (refusing a bucket-wide delete)")
         pfx = self.app_prefix(fleet, app, version)
+        # SAFETY: a prefix must be specific (>= the 4 path segments). Never mass-delete.
+        if pfx.count("/") < 4 or pfx in ("user-software/", "/"):
+            raise ValueError(f"delete_app: refusing unsafe prefix {pfx!r}")
         paginator = self._s3.get_paginator("list_objects_v2")
         keys = [o["Key"] for page in paginator.paginate(Bucket=self._apps, Prefix=pfx)
                 for o in page.get("Contents", [])]
@@ -210,7 +242,11 @@ class PlaneClient:
 
     def delete_runtime(self, key: str) -> int:
         """Delete every object under a runtime version's prefix. Returns the count."""
+        if not key or len(str(key).strip()) < 3:
+            raise ValueError("delete_runtime: a specific runtime key is required (refusing a bucket-wide delete)")
         pfx = self.runtime_prefix(key)
+        if pfx in ("/", ""):
+            raise ValueError(f"delete_runtime: refusing unsafe prefix {pfx!r}")
         paginator = self._s3.get_paginator("list_objects_v2")
         keys = [o["Key"] for page in paginator.paginate(Bucket=self._runtime, Prefix=pfx)
                 for o in page.get("Contents", [])]

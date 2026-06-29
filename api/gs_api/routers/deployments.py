@@ -420,3 +420,95 @@ def _com_endpoint(dev: dict | None) -> str | None:
             ip = (v[0] if isinstance(v, list) else v)
             return f"{str(ip).split('/')[0]}:7700"
     return None
+
+
+# ── Distribution one-click deploy (UF concept) ───────────────────────────────
+# A Distribution = {app(s) + ABI-agnostic runtime version}. Deploying it to a
+# rig: (1) resolve the runtime version to the rig's arch/os build, (2) base-deploy
+# that runtime via colony, (3) app-deploy each app via Mender. One click, two
+# authorities, the requires_runtime gate satisfied by construction.
+
+def _rig_abi(dev: dict) -> str:
+    """Infer a rig's runtime ABI suffix (e.g. 'bookworm-arm64', 'focal-arm64')
+    from its inventory attrs (os + kernel/arch). Best-effort string match."""
+    attrs = dev.get("attributes", {}) or {}
+    osr = (attrs.get("os") or "").lower()
+    kern = (attrs.get("kernel") or "").lower()
+    arch = "arm64" if ("aarch64" in kern or "arm64" in kern or "arm64" in osr) else            ("amd64" if ("x86_64" in kern or "amd64" in kern) else "")
+    # distro family
+    if "focal" in osr or "20.04" in osr: distro = "focal"
+    elif "bookworm" in osr or "debian gnu/linux 12" in osr: distro = "bookworm"
+    elif "trixie" in osr or "debian gnu/linux 13" in osr: distro = "bookworm"  # trixie≈bookworm-arm64 build for now
+    elif "ubuntu" in osr and ("24" in osr): distro = "ubuntu24"
+    else: distro = ""
+    return f"{distro}-{arch}".strip("-")
+
+
+def _resolve_runtime(s, version: str, abi: str) -> str | None:
+    """Find the runtime-plane build whose key is <version>-<abi> (or just version
+    if no abi). Returns the key, or None if unavailable."""
+    try:
+        keys = [r.get("key") or r.get("version") for r in plane_client(s).runtime_catalog()
+                if "_error" not in r]
+    except Exception:  # noqa: BLE001
+        keys = []
+    want = f"{version}-{abi}" if abi else version
+    if want in keys:
+        return want
+    # fallback: any key starting with the version + matching the abi suffix
+    for k in keys:
+        if k and k.startswith(version + "-") and (not abi or k.endswith(abi)):
+            return k
+    return None
+
+
+class DistDeployRequest(BaseModel):
+    name: str                        # distribution name
+    version: str                     # distribution version
+    device_id: str                   # the target rig (Mender device)
+    ip: str | None = None            # deploy IP (if the rig has no local_ip)
+
+
+@router.post("/distribution", dependencies=[Depends(require_key)])
+def deploy_distribution(req: DistDeployRequest) -> dict:
+    """One-click: deploy a Distribution to a rig. Resolves the runtime to the rig's
+    ABI, base-deploys it (colony), then app-deploys each app (Mender)."""
+    s = settings()
+    m = mender_client(s)
+    # the distribution bundle
+    dist = next((d for d in plane_client(s).distributions_catalog()
+                 if d.get("name") == req.name and str(d.get("version")) == str(req.version)), None)
+    if not dist:
+        raise HTTPException(status_code=404, detail=f"distribution {req.name}:{req.version} not found")
+    # the target device (for ABI + IP)
+    dev = next((_flatten(d) for d in m.devices() if d.get("id") == req.device_id), None)
+    if not dev:
+        raise HTTPException(status_code=404, detail="target device not found")
+    abi = _rig_abi(dev)
+    rt_key = _resolve_runtime(s, dist.get("runtime_version", ""), abi)
+    result = {"distribution": f"{req.name}:{req.version}", "device": req.device_id,
+              "abi": abi, "runtime": rt_key, "steps": []}
+    if not rt_key:
+        raise HTTPException(status_code=409,
+                            detail=f"no runtime build for {dist.get('runtime_version')} on abi '{abi}' "
+                                   f"(rig {dev.get('name')}). Publish that ABI build first.")
+    # 1) base deploy via colony (the rig's resolved runtime)
+    rig = (dev.get("attributes", {}) or {}).get("machine") or dev.get("name")
+    ip = req.ip or dev.get("reachable_ip")
+    try:
+        dep = colony_client(s).create(rig, "orchestrate", host=ip)
+        if ip and req.device_id:
+            try: m.set_tags(req.device_id, {"local_ip": ip, "base_version": rt_key})
+            except Exception: pass  # noqa: BLE001
+        result["steps"].append({"base": rt_key, "rig": rig, "colony_id": dep.get("id")})
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"base deploy: {e}")
+    # 2) app deploy(s) via Mender
+    for a in dist.get("apps", []):
+        try:
+            devs = resolve_fleet(m, a["fleet"]) if a.get("fleet") else [req.device_id]
+            depid = m.create_deployment(f"{req.name}-{a['app']}-{a['version']}", a.get("artifact") or a["app"], devs or [req.device_id])
+            result["steps"].append({"app": a["app"], "version": a["version"], "mender_id": depid})
+        except Exception as e:  # noqa: BLE001
+            result["steps"].append({"app": a.get("app"), "error": str(e)})
+    return result

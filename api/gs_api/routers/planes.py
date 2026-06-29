@@ -160,6 +160,60 @@ def roles_plane() -> dict:
     return {"plane": "roles", "roles": cat, "tree": tree}
 
 
+# ── Distributions (UF concept): a bundle {app(s) + ABI-agnostic runtime} ─────
+class DistributionApp(BaseModel):
+    fleet: str
+    app: str
+    version: str
+
+
+class DistributionRequest(BaseModel):
+    name: str
+    version: str
+    runtime_version: str             # ABI-AGNOSTIC (e.g. "0.2.4"); resolved per rig
+    apps: list[DistributionApp] = []
+
+
+@router.get("/distributions")
+def distributions_plane() -> dict:
+    """Every Distribution bundle (name/version → runtime_version + apps)."""
+    s = settings()
+    try:
+        return {"plane": "distributions", "distributions": plane_client(s).distributions_catalog()}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"distributions plane: {e}")
+
+
+@router.post("/distributions", dependencies=[Depends(require_key)])
+def create_distribution(req: DistributionRequest) -> dict:
+    """Create/overwrite a Distribution bundle in S3 (stateless — the plane is the
+    source of truth)."""
+    s = settings()
+    try:
+        key = plane_client(s).save_distribution(req.name, req.version, {
+            "runtime_version": req.runtime_version,
+            "apps": [a.model_dump() for a in req.apps],
+        })
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"save distribution: {e}")
+    return {"name": req.name, "version": req.version, "key": key}
+
+
+class DistributionRef(BaseModel):
+    name: str
+    version: str
+
+
+@router.delete("/distributions", dependencies=[Depends(require_key)])
+def delete_distribution(req: DistributionRef) -> dict:
+    s = settings()
+    try:
+        n = plane_client(s).delete_distribution(req.name, req.version)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"delete distribution: {e}")
+    return {"name": req.name, "version": req.version, "deleted_objects": n}
+
+
 class PublishRequest(BaseModel):
     fleet: str
     app: str
