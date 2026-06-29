@@ -143,23 +143,44 @@ function TargetDetails({ dev }) {
 
 // ── Column 2: Releases (Distributions) ──────────────────────────────────────
 function Releases({ selRel, setSelRel }) {
-  const { data } = usePoll(() => api.appsPlane(), [], 8000)
-  const { data: rt } = usePoll(() => api.runtimePlane(), [], 8000)
-  // flatten app plane tree → rows; tag each with its requires_runtime
+  const { data, refresh } = usePoll(() => api.appsPlane(), [], 8000)
+  const { data: rt, refresh: rtRefresh } = usePoll(() => api.runtimePlane(), [], 8000)
+  const [confirm, setConfirm] = useState(null)   // key pending delete-confirm
+  const [busy, setBusy] = useState(null)
+  // flatten app plane tree → rows; tag each with its requires_runtime + pin/lock
   const apps = useMemo(() => {
     const out = []
     const tree = data?.tree || {}
     for (const [fleet, byApp] of Object.entries(tree)) {
       for (const [app, vers] of Object.entries(byApp)) {
         for (const v of vers) out.push({ kind: 'app', fleet, app, version: v.version,
-          requires: v.requires_runtime || v.requires || '', key: `app:${fleet}/${app}/${v.version}` })
+          requires: v.requires_runtime || v.requires || '', key: `app:${fleet}/${app}/${v.version}`,
+          pinned: !!v.pinned, locked: !!v.locked })
       }
     }
     return out
   }, [data])
   const runtimes = (rt?.releases || []).filter((r) => !r._error)
-    .map((r) => ({ kind: 'base', key: `base:${r.key}`, version: r.key || r.version, app: 'runtime+services' }))
+    .map((r) => ({ kind: 'base', key: `base:${r.key}`, rtKey: r.key || r.version,
+      version: r.key || r.version, app: 'runtime+services',
+      pinned: !!r.pinned, locked: !!r.locked }))
   const rows = [...runtimes, ...apps]
+
+  // ACT — pin (📍/📌) + delete (🗑), same icons + guards as the Targets column.
+  // Routed by release kind: base → runtime plane, app → app plane.
+  const act = async (r, fn, label) => {
+    setBusy(r.key); setConfirm(null)
+    try { await fn(); r.kind === 'base' ? rtRefresh() : refresh() }
+    catch (e) { alert(`${label}: ${e.message}`) }
+    setBusy(null)
+  }
+  const pin = (r) => act(r, () => r.kind === 'base'
+    ? api.pinRuntime(r.rtKey, !r.pinned)
+    : api.pinApp(r.fleet, r.app, r.version, !r.pinned), 'pin')
+  const del = (r) => act(r, () => r.kind === 'base'
+    ? api.deleteRuntime(r.rtKey)
+    : api.deleteApp(r.fleet, r.app, r.version), 'delete')
+
   return (
     <div className="pane min-h-0">
       <div className="pane-head">
@@ -172,7 +193,7 @@ function Releases({ selRel, setSelRel }) {
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
-            <tr><th className="th"></th><th className="th">Name</th><th className="th">Version</th><th className="th">Needs</th></tr>
+            <tr><th className="th"></th><th className="th">Name</th><th className="th">Version</th><th className="th">Needs</th><th className="th text-right">ACT</th></tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
             {rows.map((r) => (
@@ -182,11 +203,25 @@ function Releases({ selRel, setSelRel }) {
                   <span className={`badge ${r.kind === 'base' ? 'bg-violet-500/15 text-violet-300' : 'bg-cyan-500/15 text-cyan-300'}`}>{r.kind}</span>
                 </td>
                 <td className="cell text-xs">{r.kind === 'base' ? 'runtime+services' : `${r.app}`}</td>
-                <td className="cell text-xs font-mono text-slate-300">{r.version}</td>
+                <td className="cell text-xs font-mono text-slate-300">{r.version}{r.locked && <span title="locked: deployed, immutable" className="ml-1">🔒</span>}</td>
                 <td className="cell text-[11px] text-muted">{r.kind === 'app' ? (r.requires || '—') : ''}</td>
+                <td className="cell text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                  {confirm === r.key
+                    ? <RowConfirm label="delete" onYes={() => del(r)} onNo={() => setConfirm(null)} />
+                    : busy === r.key ? <span className="text-muted text-xs">…</span>
+                    : <span className="inline-flex gap-0.5">
+                        <button className="icon-btn" title={r.pinned ? 'unpin' : 'pin (guard from delete)'}
+                                onClick={() => pin(r)}>{r.pinned ? '📌' : '📍'}</button>
+                        <button className="icon-btn"
+                                title={r.locked ? 'locked: deployed, immutable' : r.pinned ? 'unpin before delete' : 'delete from plane'}
+                                disabled={r.pinned || r.locked}
+                                style={{ color: (r.pinned || r.locked) ? '#5a6b7d' : '#E57373' }}
+                                onClick={() => !r.pinned && !r.locked && setConfirm(r.key)}>🗑</button>
+                      </span>}
+                </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td className="cell text-muted" colSpan={4}>no releases</td></tr>}
+            {rows.length === 0 && <tr><td className="cell text-muted" colSpan={5}>no releases</td></tr>}
           </tbody>
         </table>
       </div>
@@ -203,7 +238,6 @@ function Releases({ selRel, setSelRel }) {
     </div>
   )
 }
-
 // ── Column 3: Action History (deployments) ──────────────────────────────────
 function ActionHistory({ targetName }) {
   const { data } = usePoll(() => api.deployments(), [], 6000)
