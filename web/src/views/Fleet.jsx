@@ -152,7 +152,7 @@ function GroupCell({ device, groups, onChanged }) {
 }
 
 export function Fleet() {
-  const { data, loading, refresh } = usePoll(() => api.devices(), [], 6000)
+  const { data, loading, error, refresh } = usePoll(() => api.devices(), [], 6000)
   const { data: gdata, refresh: grefresh } = usePoll(() => api.groups(), [], 30000)
   const [showConnect, setShowConnect] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -169,6 +169,12 @@ export function Fleet() {
           <button className="btn-ghost" onClick={reload}>Refresh</button>
         </span>
       </div>
+      {error && (
+        <div className="bg-red-500/15 border-b border-red-500/40 text-red-300 text-xs px-3 py-2">
+          ⚠ Can't reach Mender inventory — the fleet can't be read (devices are NOT
+          deleted; this is a connectivity/auth error). Detail: {error}
+        </div>
+      )}
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
@@ -180,7 +186,9 @@ export function Fleet() {
             </tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
-            {loading && <tr><td className="cell text-muted" colSpan={9}>loading…</td></tr>}
+            {loading && !data && <tr><td className="cell text-muted" colSpan={9}>loading…</td></tr>}
+            {error && <tr><td className="cell text-red-300" colSpan={9}>fleet unavailable (Mender error) — see banner above</td></tr>}
+            {!loading && !error && devices.length === 0 && <tr><td className="cell text-muted" colSpan={9}>no devices enrolled</td></tr>}
             {devices.map((d) => (
               <tr key={d.id} className="hover:bg-edge/20 cursor-pointer" onClick={() => setSelected(d)}>
                 <td className="cell font-mono text-xs">{d.name || d.id?.slice(0, 12)}</td>

@@ -32,7 +32,7 @@ function RowConfirm({ label, onYes, onNo }) {
 
 // ── Column 1: Targets (devices) ─────────────────────────────────────────────
 function Targets({ sel, setSel, onAssigned }) {
-  const { data, loading, refresh } = usePoll(() => api.devices(), [], 6000)
+  const { data, loading, error, refresh } = usePoll(() => api.devices(), [], 6000)
   const devices = data?.devices || []
   const selDev = devices.find((d) => d.id === sel)
   const [confirm, setConfirm] = useState(null)   // device id awaiting cleanup confirm
@@ -64,13 +64,20 @@ function Targets({ sel, setSel, onAssigned }) {
           <span className="icon-btn" title="filter">▾</span>
         </span>
       </div>
+      {error && (
+        <div className="bg-red-500/15 border-b border-red-500/40 text-red-300 text-[11px] px-3 py-2">
+          ⚠ Mender unreachable — fleet not read (devices NOT deleted). {error}
+        </div>
+      )}
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
             <tr><th className="th">Name</th><th className="th">Base</th><th className="th">App</th><th className="th">St</th><th className="th text-right">ACT</th></tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
-            {loading && <tr><td className="cell text-muted" colSpan={5}>loading…</td></tr>}
+            {loading && !data && <tr><td className="cell text-muted" colSpan={5}>loading…</td></tr>}
+            {error && <tr><td className="cell text-red-300" colSpan={5}>fleet unavailable — see banner</td></tr>}
+            {!loading && !error && devices.length === 0 && <tr><td className="cell text-muted" colSpan={5}>no devices</td></tr>}
             {devices.map((d) => (
               <tr key={d.id} onClick={() => setSel(d.id)}
                   className={`cursor-pointer hover:bg-edge/20 ${sel === d.id ? 'row-sel' : ''}`}>
