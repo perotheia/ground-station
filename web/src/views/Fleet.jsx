@@ -369,8 +369,11 @@ export function Fleet() {
           {Object.keys(GROUP_AXES).map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
         <span className="ml-auto flex gap-1 items-center">
-          {checkedIds.length > 0 &&
-            <button className="btn" onClick={() => setShowGroup(true)}>Group ({checkedIds.length})</button>}
+          <button className="btn" disabled={checkedIds.length === 0}
+                  title={checkedIds.length === 0 ? 'select device(s) to group' : ''}
+                  onClick={() => setShowGroup(true)}>
+            Group{checkedIds.length ? ` (${checkedIds.length})` : ''}
+          </button>
           <span className="relative">
             <button className="btn" onClick={() => setConnectMenu((m) => !m)}>Connect Device ▾</button>
             {connectMenu && (
