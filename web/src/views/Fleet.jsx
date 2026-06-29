@@ -327,7 +327,6 @@ export function Fleet() {
               </div>
             )}
           </span>
-          <button className="btn-ghost" onClick={reload}>Refresh</button>
         </span>
       </div>
       {error && (

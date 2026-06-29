@@ -162,7 +162,6 @@ export function Rollouts() {
         <span className="text-muted font-normal text-xs ml-2">{deps.length}</span>
         <span className="ml-auto flex gap-1">
           <button className="btn" onClick={() => setShowNew(true)}>New Rollout</button>
-          <button className="btn-ghost" onClick={refresh}>Refresh</button>
         </span>
       </div>
       <div className="flex-1 overflow-auto p-3">

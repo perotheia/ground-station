@@ -66,7 +66,6 @@ export function Deployments() {
       <div className="flex items-center gap-4">
         <h2 className="text-base font-semibold">Deployments</h2>
         <span className="text-sm text-muted">{deps.length} rollout(s)</span>
-        <button onClick={refresh} className="btn-ghost ml-auto">Refresh</button>
       </div>
 
       {error && <div className="card border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-300">{error}</div>}
