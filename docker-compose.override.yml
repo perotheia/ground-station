@@ -1,0 +1,40 @@
+# docker-compose.override.yml — DEV hot-reload profile (dalek-local iteration).
+#
+# Compose auto-merges this on top of docker-compose.yml. It makes the GS source
+# on THIS box (/home/applied/repo/ground-station) the live, editable copy:
+#   - gs-api  : bind-mount gs_api/ + uvicorn --reload → save = backend reload.
+#   - gs-web-dev : a Vite dev server (HMR) bind-mounting web/ → save = instant UI.
+#                  Use http://<dalek>:5173 while developing; gs-web (nginx:8090)
+#                  stays the prod-built serve. /api proxies to gs-api on the
+#                  mender network.
+# No image rebuild on edit. Remove/ignore this file to run the pure prod stack.
+
+services:
+  gs-api:
+    # live source over the baked package; --reload watches it.
+    volumes:
+      - ./fleet:/gs/fleet:ro
+      - ./api/gs_api:/gs/api/gs_api          # editable backend source
+    command: ["uvicorn", "gs_api.app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+
+  gs-web-dev:
+    image: node:22-alpine
+    container_name: gs-web-dev
+    working_dir: /web
+    # install deps once into a named volume, then run the Vite dev server (HMR).
+    command: ["sh", "-c", "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173"]
+    volumes:
+      - ./web:/web                            # editable UI source (HMR)
+      - gs-web-node-modules:/web/node_modules # keep node_modules off the host bind
+    environment:
+      # the dev server proxies /api → gs-api over the mender network
+      GS_API_TARGET: "http://gs-api:8080"
+    ports:
+      - "${GS_WEB_DEV_PORT:-5173}:5173"
+    depends_on:
+      - gs-api
+    networks:
+      - mender
+
+volumes:
+  gs-web-node-modules:
