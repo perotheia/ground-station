@@ -154,104 +154,6 @@ function TargetDetails({ dev }) {
   )
 }
 
-// ── Column 2: Releases (Distributions) ──────────────────────────────────────
-function Releases({ selRel, setSelRel }) {
-  const { data, refresh } = usePoll(() => api.appsPlane(), [], 8000)
-  const { data: rt, refresh: rtRefresh } = usePoll(() => api.runtimePlane(), [], 8000)
-  const [confirm, setConfirm] = useState(null)   // key pending delete-confirm
-  const [busy, setBusy] = useState(null)
-  // flatten app plane tree → rows; tag each with its requires_runtime + pin/lock
-  const apps = useMemo(() => {
-    const out = []
-    const tree = data?.tree || {}
-    for (const [fleet, byApp] of Object.entries(tree)) {
-      for (const [app, vers] of Object.entries(byApp)) {
-        for (const v of vers) out.push({ kind: 'app', fleet, app, version: v.version,
-          requires: v.requires_runtime || v.requires || '', key: `app:${fleet}/${app}/${v.version}`,
-          pinned: !!v.pinned, locked: !!v.locked })
-      }
-    }
-    return out
-  }, [data])
-  const runtimes = (rt?.releases || []).filter((r) => !r._error)
-    .map((r) => ({ kind: 'base', key: `base:${r.key}`, rtKey: r.key || r.version,
-      version: r.key || r.version, app: 'runtime+services',
-      pinned: !!r.pinned, locked: !!r.locked }))
-  const rows = [...runtimes, ...apps]
-
-  // ACT — pin (📍/📌) + delete (🗑), same icons + guards as the Targets column.
-  // Routed by release kind: base → runtime plane, app → app plane.
-  const act = async (r, fn, label) => {
-    setBusy(r.key); setConfirm(null)
-    try { await fn(); r.kind === 'base' ? rtRefresh() : refresh() }
-    catch (e) { alert(`${label}: ${e.message}`) }
-    setBusy(null)
-  }
-  const pin = (r) => act(r, () => r.kind === 'base'
-    ? api.pinRuntime(r.rtKey, !r.pinned)
-    : api.pinApp(r.fleet, r.app, r.version, !r.pinned), 'pin')
-  const del = (r) => act(r, () => r.kind === 'base'
-    ? api.deleteRuntime(r.rtKey)
-    : api.deleteApp(r.fleet, r.app, r.version), 'delete')
-
-  return (
-    <div className="pane min-h-0">
-      <div className="pane-head">
-        Releases
-        <span className="ml-auto flex gap-1 text-muted">
-          <span className="icon-btn" title="search">⌕</span>
-          <span className="icon-btn" title="filter">▾</span>
-        </span>
-      </div>
-      <div className="flex-1 overflow-auto">
-        <table className="w-full">
-          <thead className="sticky top-0 bg-sidebar/60">
-            <tr><th className="th"></th><th className="th">Name</th><th className="th">Version</th><th className="th">Needs</th><th className="th text-right">ACT</th></tr>
-          </thead>
-          <tbody className="divide-y divide-edge/40">
-            {rows.map((r) => (
-              <tr key={r.key} onClick={() => setSelRel(r)}
-                  className={`cursor-pointer hover:bg-edge/20 ${selRel?.key === r.key ? 'row-sel' : ''}`}>
-                <td className="cell">
-                  <span className={`badge ${r.kind === 'base' ? 'bg-violet-500/15 text-violet-300' : 'bg-cyan-500/15 text-cyan-300'}`}>{r.kind}</span>
-                </td>
-                <td className="cell text-xs">{r.kind === 'base' ? 'runtime+services' : `${r.app}`}</td>
-                <td className="cell text-xs font-mono text-slate-300">{r.version}{r.locked && <span title="locked: deployed, immutable" className="ml-1">🔒</span>}</td>
-                <td className="cell text-[11px] text-muted">{r.kind === 'app' ? (r.requires || '—') : ''}</td>
-                <td className="cell text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                  {confirm === r.key
-                    ? <RowConfirm label="delete" onYes={() => del(r)} onNo={() => setConfirm(null)} />
-                    : busy === r.key ? <span className="text-muted text-xs">…</span>
-                    : <span className="inline-flex gap-0.5">
-                        <button className="icon-btn" title={r.pinned ? 'unpin' : 'pin (guard from delete)'}
-                                onClick={() => pin(r)}>{r.pinned ? '📌' : '📍'}</button>
-                        <button className="icon-btn"
-                                title={r.locked ? 'locked: deployed, immutable' : r.pinned ? 'unpin before delete' : 'delete from plane'}
-                                disabled={r.pinned || r.locked}
-                                style={{ color: (r.pinned || r.locked) ? '#5a6b7d' : '#E57373' }}
-                                onClick={() => !r.pinned && !r.locked && setConfirm(r.key)}>🗑</button>
-                      </span>}
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td className="cell text-muted" colSpan={5}>no releases</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <div className="border-t border-edge bg-sidebar/30 p-3 text-xs text-muted">
-        {selRel
-          ? <div className="space-y-1">
-              <div className="font-semibold text-slate-100">{selRel.kind === 'base' ? 'runtime+services' : selRel.app} <span className="font-mono">{selRel.version}</span></div>
-              {selRel.kind === 'app' && <Kv k="Requires runtime" v={selRel.requires || '— (unpinned)'} />}
-              {selRel.kind === 'app' && <Kv k="Fleet" v={selRel.fleet} />}
-              {selRel.kind === 'base' && <div className="text-muted">A platform release. Deploy via colony (base).</div>}
-            </div>
-          : 'Select a release to see details.'}
-      </div>
-    </div>
-  )
-}
-// ── Column 3: Action History (deployments) ──────────────────────────────────
 function ActionHistory({ targetName }) {
   const { data } = usePoll(() => api.deployments(), [], 6000)
   const rows = (data?.deployments || []).slice(0, 40)
@@ -292,84 +194,133 @@ function fmtTs(c) {
   return String(c).slice(5, 16).replace('T', ' ')
 }
 
-export function Deployment() {
-  const [selTarget, setSelTarget] = useState(null)
-  const [selRel, setSelRel] = useState(null)
-  const { data: devData } = usePoll(() => api.devices(), [], 8000)
-  const target = (devData?.devices || []).find((d) => d.id === selTarget)
-  const [msg, setMsg] = useState(null)
-  const [busy, setBusy] = useState(false)
+// ── Column 2 (P4): Distributions — pick a PREPARED distribution to deploy ────
+function DistributionsColumn({ sel, setSel }) {
+  const { data } = usePoll(() => api.distributions(), [], 10000)
+  const dists = (data?.distributions || []).filter((d) => !d._error)
+  return (
+    <div className="pane min-h-0">
+      <div className="pane-head">Distributions
+        <span className="text-muted font-normal text-xs ml-2">{dists.length}</span></div>
+      <div className="flex-1 overflow-auto">
+        <table className="w-full">
+          <thead className="sticky top-0 bg-sidebar/60">
+            <tr><th className="th">Name</th><th className="th">Version</th><th className="th">Arity</th></tr>
+          </thead>
+          <tbody className="divide-y divide-edge/40">
+            {dists.length === 0 && <tr><td className="cell text-muted" colSpan={3}>no distributions — prepare one in Distributions</td></tr>}
+            {dists.map((d) => {
+              const k = `${d.name}/${d.version}`
+              return (
+                <tr key={k} onClick={() => setSel(d)}
+                    className={`cursor-pointer hover:bg-edge/20 ${sel && `${sel.name}/${sel.version}` === k ? 'row-sel' : ''}`}>
+                  <td className="cell text-sm">{d.name}</td>
+                  <td className="cell font-mono text-xs">{d.version}</td>
+                  <td className="cell text-xs"><span className="badge bg-amber-500/15 text-amber-300">/{d.arity || (d.roles?.length || 1)}</span></td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="border-t border-edge bg-sidebar/30 p-3 text-xs text-muted">
+        {sel
+          ? <div className="space-y-1">
+              <div className="font-semibold text-slate-100">{sel.name} <span className="font-mono">{sel.version}</span> · arity {sel.arity || sel.roles?.length}</div>
+              {(sel.roles || []).map((r) => (
+                <div key={r.role} className="font-mono text-[11px]"><span className="text-slate-200">{r.role}</span>
+                  <span className="text-muted"> · {r.abi} · {r.runtime_build}{r.app_build ? ` · ${r.app_build}` : ''}</span></div>
+              ))}
+            </div>
+          : 'Select a distribution to deploy.'}
+      </div>
+    </div>
+  )
+}
 
-  // The deploy gate. An APP needs a target whose base_version == requires_runtime
-  // (no backward compat). A BASE deploy needs a target (the rig to (re)orchestrate).
-  // `ready` drives the Deploy button — it's only enabled when the action is valid.
-  const gate = useMemo(() => {
-    if (!selRel) return { ready: false, why: 'select a release' }
-    if (!target) return { ready: false, why: 'select a target' }
-    if (selRel.kind === 'base') return { ready: true, app: false }
-    // app: fleet must match + runtime must match
-    if (selRel.fleet && target.fleet && !String(target.fleet).includes(selRel.fleet))
-      return { ready: false, app: true, why: `target is not in fleet ${selRel.fleet}` }
-    const need = selRel.requires, have = target.base_version
-    if (!need) return { ready: true, app: true, note: 'app unpinned (arch-only)' }
-    if (need !== have)
-      return { ready: false, app: true, incompatible: true, need, have,
-               why: `device runs ${have || '—'}, needs ${need}` }
-    return { ready: true, app: true, compatible: true }
-  }, [selRel, target])
-
+// Role → compatible-machine assignment dialog (deploy a distribution). Only
+// machines whose probed abi matches a role's abi are offered for that role.
+function DeployDistDialog({ dist, devices, onClose, onDone }) {
+  const [assign, setAssign] = useState({})   // role -> device_id
+  const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null)
+  const roles = dist.roles || []
+  // a device's abi (mirror the backend _rig_abi heuristic, loosely)
+  const devAbi = (d) => {
+    const os = (d.attributes?.os || '').toLowerCase(), k = (d.attributes?.kernel || '').toLowerCase()
+    const arch = /aarch64|arm64/.test(k + os) ? 'arm64' : /x86_64|amd64/.test(k) ? 'amd64' : ''
+    const distro = /focal|20\.04/.test(os) ? 'focal' : /bookworm|trixie|debian gnu\/linux 1[23]/.test(os) ? 'bookworm'
+      : /ubuntu.*24/.test(os) ? 'ubuntu24' : ''
+    return [distro, arch].filter(Boolean).join('-')
+  }
   const deploy = async () => {
-    if (!gate.ready) return
+    const assignments = roles.map((r) => ({ role: r.role, device_id: assign[r.role] }))
+    if (assignments.some((a) => !a.device_id)) { setMsg('assign a machine to every role'); return }
     setBusy(true); setMsg(null)
     try {
-      if (selRel.kind === 'base') {
-        const rig = target.attributes?.machine || target.name
-        // The deploy target IP is the device's reachable_ip (remote_ip||local_ip).
-        // A preauthorized device has none → prompt for it (then it's recorded as
-        // local_ip + used as the colony host). We DON'T assume later reachability.
-        let ip = target.reachable_ip || null
-        if (!ip) {
-          ip = window.prompt(`No IP on record for ${rig}. Enter the target IP to deploy to:`)
-          if (!ip) { setMsg('deploy cancelled — a target IP is required'); setBusy(false); return }
-        }
-        const r = await api.deployBase(rig, 'orchestrate', ip, target.id)
-        setMsg(`base deploy ${rig} @ ${ip}: ${r.ok ? 'OK' : 'started'} — progress in Action History`)
-      } else {
-        const r = await api.publishApp(selRel.fleet, selRel.app, selRel.version, true)
-        setMsg(r.deployment
-          ? `deployed ${r.artifact_name} → ${r.deployment.devices} device(s) — see status in Mender UI`
-          : (r.detail || r.upload || 'published'))
-      }
-    } catch (e) { setMsg(`error: ${e.message}`) }
+      const res = await api.deployDistribution({ name: dist.name, version: dist.version, assignments })
+      onDone(res)
+    } catch (e) { setMsg(e.message) }
     setBusy(false)
   }
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="card w-[34rem] p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center mb-3">
+          <h3 className="font-medium flex-1" style={{ color: '#4A90E2' }}>Deploy {dist.name}:{dist.version}</h3>
+          <button className="text-slate-400 hover:text-slate-200" onClick={onClose}>✕</button>
+        </div>
+        <div className="text-xs text-muted mb-3">Assign each role a compatible machine (abi must match):</div>
+        <div className="space-y-3">
+          {roles.map((r) => {
+            const compatible = devices.filter((d) => !r.abi || devAbi(d) === r.abi)
+            return (
+              <div key={r.role} className="flex items-center gap-2 text-sm">
+                <span className="w-40 text-right text-xs"><span className="font-semibold text-slate-200">{r.role}</span>
+                  <span className="text-muted"> · {r.abi}</span></span>
+                <select className="input flex-1 text-sm" value={assign[r.role] || ''}
+                        onChange={(e) => setAssign({ ...assign, [r.role]: e.target.value })}>
+                  <option value="">— pick a {r.abi} machine —</option>
+                  {compatible.map((d) => <option key={d.id} value={d.id}>{d.name || d.id.slice(0, 12)} ({devAbi(d) || '?'})</option>)}
+                </select>
+              </div>
+            )
+          })}
+        </div>
+        {msg && <div className="text-xs text-red-400 mt-2">{msg}</div>}
+        <button className="btn w-full mt-4" disabled={busy} onClick={deploy}>{busy ? 'deploying…' : 'Deploy →'}</button>
+      </div>
+    </div>
+  )
+}
+
+export function Deployment() {
+  const [selTarget, setSelTarget] = useState(null)
+  const [selDist, setSelDist] = useState(null)
+  const { data: devData } = usePoll(() => api.devices(null, 'accepted'), [], 8000)
+  const devices = devData?.devices || []
+  const target = devices.find((d) => d.id === selTarget)
+  const [showDeploy, setShowDeploy] = useState(false)
+  const [msg, setMsg] = useState(null)
 
   return (
     <div className="h-full flex flex-col gap-2">
-      {/* deploy action bar */}
+      {/* deploy action bar — Distribution-driven */}
       <div className="flex items-center gap-3 text-sm">
-        <span className="text-muted">Target:</span>
-        <span className="font-mono text-slate-200">{target?.name || '— select —'}</span>
-        <span className="text-muted">Release:</span>
-        <span className="font-mono text-slate-200">{selRel ? `${selRel.kind === 'base' ? 'runtime' : selRel.app} ${selRel.version}` : '— select —'}</span>
-        {gate.incompatible && (
-          <span className="badge bg-danger/15 text-danger" title={gate.why}>incompatible: needs {gate.need}</span>
-        )}
-        {gate.compatible && (
-          <span className="badge bg-ok/15 text-ok">compatible</span>
-        )}
-        <button className="btn ml-auto" disabled={busy || !gate.ready} title={gate.why || ''} onClick={deploy}>
-          {busy ? 'deploying…' : 'Deploy →'}
-        </button>
+        <span className="text-muted">Distribution:</span>
+        <span className="font-mono text-slate-200">{selDist ? `${selDist.name} ${selDist.version} /${selDist.arity || selDist.roles?.length}` : '— select —'}</span>
+        <button className="btn ml-auto" disabled={!selDist} title={!selDist ? 'select a distribution' : ''}
+                onClick={() => setShowDeploy(true)}>Deploy →</button>
       </div>
       {msg && <div className="card px-3 py-1.5 text-xs text-slate-300">{msg}</div>}
-
-      {/* 3-column board */}
+      {/* 3-column board: Targets | Distributions | Action History */}
       <div className="flex-1 grid grid-cols-3 grid-rows-1 gap-2 min-h-0">
         <Targets sel={selTarget} setSel={setSelTarget} />
-        <Releases selRel={selRel} setSelRel={setSelRel} />
+        <DistributionsColumn sel={selDist} setSel={setSelDist} />
         <ActionHistory targetName={target?.name} />
       </div>
+      {showDeploy && selDist && <DeployDistDialog dist={selDist} devices={devices}
+        onClose={() => setShowDeploy(false)}
+        onDone={(res) => { setShowDeploy(false); setMsg(`deployed ${selDist.name}:${selDist.version} — ${(res.steps || []).length} role(s); progress in Action History`) }} />}
     </div>
   )
 }
