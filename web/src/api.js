@@ -44,8 +44,8 @@ export const api = {
 
   // ── Connect Device (the GS funnel) ────────────────────────────────────────
   pending: () => call('/devices/pending'),
-  connect: (mac, fleet, group) =>
-    call('/devices/connect', { method: 'POST', body: JSON.stringify({ mac, fleet, group }) }),
+  connect: (mac, fleet, group, name) =>
+    call('/devices/connect', { method: 'POST', body: JSON.stringify({ mac, fleet, group, name }) }),
   decommission: (id) => call(`/devices/${id}`, { method: 'DELETE' }),
   // pin guards a device from deletion (unpin before delete)
   pinDevice: (id, pinned) =>

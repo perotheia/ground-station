@@ -32,11 +32,12 @@ function ConnectDialog({ onClose, groups }) {
   const [busy, setBusy] = useState(null)
   const [msg, setMsg] = useState(null)
   const [group, setGroup] = useState('')
+  const [names, setNames] = useState({})   // mac → operator-typed display name
   const connect = async (mac) => {
     setBusy(mac); setMsg(null)
     try {
       const fleet = mac.startsWith('dc:a6') ? 'theia-gateway' : 'theia-rig'
-      const r = await api.connect(mac, fleet, group || undefined)
+      const r = await api.connect(mac, fleet, group || undefined, names[mac] || undefined)
       setMsg(`${mac} → ${r.mender?.newly_accepted ? 'accepted' : 'already accepted'}; cluster ${r.observability?.present_in_cluster ? 'present' : 'absent'}`)
       refresh()
     } catch (e) { setMsg(`error: ${e.message}`) }
@@ -65,7 +66,12 @@ function ConnectDialog({ onClose, groups }) {
           <div key={p.mac} className="flex items-center gap-2 py-1.5 border-t border-edge/60">
             <span className="font-mono text-xs">{p.mac}</span>
             <span className="badge bg-accent/15 text-accent">pending</span>
-            <button className="btn ml-auto" disabled={busy === p.mac} onClick={() => connect(p.mac)}>
+            <input className="input text-xs py-0.5 w-32 ml-auto" placeholder="rig name…"
+                   value={names[p.mac] || ''}
+                   onChange={(e) => setNames({ ...names, [p.mac]: e.target.value })} />
+            <button className="btn" disabled={busy === p.mac || !(names[p.mac] || '').trim()}
+                    title={!(names[p.mac] || '').trim() ? 'name the rig first' : 'accept + name'}
+                    onClick={() => connect(p.mac)}>
               {busy === p.mac ? '…' : 'Connect'}
             </button>
           </div>

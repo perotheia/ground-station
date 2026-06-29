@@ -47,11 +47,17 @@ def _scalar(v):
 def _flatten(dev: dict) -> dict:
     """Mender device → a flat record the UI renders directly."""
     attrs = {a["name"]: _scalar(a["value"]) for a in dev.get("attributes", []) or []}
+    # STABLE IDENTITY = the MAC (Mender identity_data — immutable, survives
+    # re-enrol). device_id (the UUID) rotates on decommission, so GS keys on MAC.
+    idd = dev.get("identity_data") or {}
+    mac = idd.get("mac") if isinstance(idd, dict) else None
     return {
-        "id": dev.get("id"),
+        "id": dev.get("id"),                 # server UUID (rotates — display only)
+        "mac": mac,                          # the STABLE identity
         "updated_ts": dev.get("updated_ts"),
-        # a human name for the row — the rig hostname (raspberrypi / jason)
-        "name": attrs.get("hostname") or attrs.get("name"),
+        # DISPLAY NAME: operator-assigned tag (set at Connect, keyed on the MAC →
+        # same in GS + Mender, survives re-enrol) → hostname → the MAC.
+        "name": attrs.get("name") or attrs.get("hostname") or mac,
         # the hardware-capability fleet (Mender device_type) — our <fleet> key
         "fleet": attrs.get("device_type"),
         "group": attrs.get("group"),
@@ -172,6 +178,7 @@ class ConnectRequest(BaseModel):
     mac: str
     fleet: str | None = None        # expected device_type (compatibility class)
     group: str | None = None        # optional Mender group
+    name: str | None = None         # operator-assigned display name (Mender tag)
 
 
 @router.post("/connect", dependencies=[Depends(_require_key)])
@@ -204,6 +211,14 @@ def connect(req: ConnectRequest) -> dict:
             m.assign_group(dev["id"], req.group)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass            # group is best-effort; accept already succeeded
+    # operator-assigned display NAME → a Mender inventory tag. Keyed on the device
+    # (which Mender ties to the immutable MAC identity), so the name is the same in
+    # GS + Mender and survives re-enrol. _flatten reads attrs["name"] first.
+    if req.name:
+        try:
+            m.set_tags(dev["id"], {"name": req.name})  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass            # name is best-effort; accept already succeeded
     # ── com-half: is the board present in the Observability cluster? ─────────
     observed = _observed()
     return {
