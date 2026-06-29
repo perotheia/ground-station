@@ -15,7 +15,9 @@ body { @apply bg-ink text-slate-200 antialiased; font-family: ui-sans-serif, sys
 /* form inputs — dark theme (was unstyled → white-on-white) */
 .input { @apply rounded border border-edge bg-ink text-slate-200 px-2 py-1.5 outline-none focus:border-accent placeholder:text-muted; }
 .input:disabled { @apply opacity-60; }
-select.input option { @apply bg-panel text-slate-200; }
+/* every native select's option list — dark (was white-on-white when open) */
+select option { @apply bg-panel text-slate-200; }
+select optgroup { @apply bg-panel text-slate-200; }
 
 /* dashboard chrome — the multi-pane UF layout */
 .pane { @apply flex flex-col rounded-lg border border-edge bg-panel overflow-hidden min-h-0; }

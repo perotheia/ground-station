@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { api } from '../api'
 import { usePoll } from '../App'
+import { CreateTargetModal } from '../components/CreateTargetModal'
 
 // Fleet — the device inventory (UF "Targets"): status dots, the base/app version
 // pair, Theia state (Health · SM · UCM), group assignment, Connect (the GS
@@ -26,65 +27,6 @@ function Pill({ v }) {
   return <span className="badge bg-edge/40 text-slate-200 font-mono text-[11px]">{v}</span>
 }
 
-function ConnectDialog({ onClose, groups }) {
-  const { data, refresh } = usePoll(() => api.pending(), [], 5000)
-  const pend = data?.pending || []
-  const [busy, setBusy] = useState(null)
-  const [msg, setMsg] = useState(null)
-  const [group, setGroup] = useState('')
-  const [names, setNames] = useState({})   // mac → operator-typed display name
-  const connect = async (mac) => {
-    setBusy(mac); setMsg(null)
-    try {
-      const fleet = mac.startsWith('dc:a6') ? 'theia-gateway' : 'theia-rig'
-      const r = await api.connect(mac, fleet, group || undefined, names[mac] || undefined)
-      setMsg(`${mac} → ${r.mender?.newly_accepted ? 'accepted' : 'already accepted'}; cluster ${r.observability?.present_in_cluster ? 'present' : 'absent'}`)
-      refresh()
-    } catch (e) { setMsg(`error: ${e.message}`) }
-    setBusy(null)
-  }
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="card w-[30rem] p-4" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center mb-3">
-          <h3 className="font-semibold">Connect Device</h3>
-          <button className="btn-ghost ml-auto" onClick={onClose}>Close</button>
-        </div>
-        <p className="text-xs text-muted mb-3">
-          Boards Mender sees but hasn't accepted. Connect = accept in Mender + verify
-          Observability presence. The GS funnel — both, or nothing.
-        </p>
-        <div className="flex items-center gap-2 mb-2 text-xs">
-          <span className="text-muted">Assign to group:</span>
-          <select className="input text-xs py-0.5" value={group} onChange={(e) => setGroup(e.target.value)}>
-            <option value="">(none)</option>
-            {groups.map((g) => <option key={g.name} value={g.name}>{g.name}</option>)}
-          </select>
-        </div>
-        {pend.length === 0 && <div className="text-sm text-muted">no pending boards.</div>}
-        {pend.map((p) => (
-          <div key={p.mac} className="flex items-center gap-2 py-1.5 border-t border-edge/60">
-            <span className="font-mono text-xs">{p.mac}</span>
-            <span className="badge bg-accent/15 text-accent">pending</span>
-            <input className="input text-xs py-0.5 w-32 ml-auto" placeholder="rig name…"
-                   value={names[p.mac] || ''}
-                   onChange={(e) => setNames({ ...names, [p.mac]: e.target.value })} />
-            <button className="btn" disabled={busy === p.mac || !(names[p.mac] || '').trim()}
-                    title={!(names[p.mac] || '').trim() ? 'name the rig first' : 'accept + name'}
-                    onClick={() => connect(p.mac)}>
-              {busy === p.mac ? '…' : 'Connect'}
-            </button>
-          </div>
-        ))}
-        {msg && <div className="mt-3 text-xs text-slate-300">{msg}</div>}
-      </div>
-    </div>
-  )
-}
-
-// Merged-timeline side panel: colony base events + Mender app deployments + Theia
-// state, newest-first, authority-color-coded.
-const AUTH_COLOR = { base: '#42A5F5', app: '#AB47BC', state: '#78909C' }
 function Timeline({ device, onClose }) {
   const [tl, setTl] = useState(null)
   const [err, setErr] = useState(null)
@@ -170,7 +112,7 @@ function GroupCell({ device, groups, onChanged }) {
   }
   return (
     <select
-      className="bg-transparent text-xs text-muted hover:text-slate-200 outline-none cursor-pointer"
+      className="bg-ink text-xs text-muted hover:text-slate-200 outline-none cursor-pointer rounded px-1"
       disabled={busy} value={device.group || ''} onClick={(e) => e.stopPropagation()}
       onChange={(e) => change(e.target.value)}>
       <option value="">{device.group || 'ungrouped'}</option>
@@ -359,12 +301,12 @@ export function Fleet() {
         Fleet
         <span className="text-muted font-normal text-xs ml-2">{devices.length} · {groups.length} group(s)</span>
         <span className="ml-3 text-xs text-muted">Status:</span>
-        <select className="bg-transparent text-xs ml-1 outline-none cursor-pointer text-slate-200"
+        <select className="bg-ink border border-edge rounded text-xs ml-1 px-1 outline-none cursor-pointer text-slate-200"
                 value={status} onChange={(e) => { setStatus(e.target.value); clearChecks() }}>
           {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <span className="ml-3 text-xs text-muted">Group by:</span>
-        <select className="bg-transparent text-xs ml-1 outline-none cursor-pointer text-slate-200"
+        <select className="bg-ink border border-edge rounded text-xs ml-1 px-1 outline-none cursor-pointer text-slate-200"
                 value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
           {Object.keys(GROUP_AXES).map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
@@ -419,7 +361,7 @@ export function Fleet() {
           </tbody>
         </table>
       </div>
-      {showConnect && <ConnectDialog groups={groups} onClose={() => { setShowConnect(false); reload() }} />}
+      {showConnect && <CreateTargetModal onClose={() => setShowConnect(false)} onCreated={() => { setShowConnect(false); reload() }} />}
       {showPreauth && <PreauthorizeDialog onClose={() => setShowPreauth(false)} onDone={() => { setShowPreauth(false); reload() }} />}
       {showGroup && <GroupDialog ids={checkedIds} groups={groups} onClose={() => setShowGroup(false)}
                                  onDone={() => { setShowGroup(false); clearChecks(); reload() }} />}
