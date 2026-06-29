@@ -523,12 +523,13 @@ def deploy_distribution(req: DistDeployRequest) -> dict:
             step["base"] = role["runtime_build"]; step["colony_id"] = dep.get("id")
         except Exception as e:  # noqa: BLE001
             step["base_error"] = str(e)
-        # 2) app: the role's app_build via Mender (to this one device)
-        if role.get("app_build"):
+        # 2) SWP: the role's swp_build via Mender (to this one device)
+        swp_build = role.get("swp_build") or role.get("app_build")
+        if swp_build:
             try:
-                depid = m.create_deployment(f"{req.name}-{a.role}-{role['app_build']}",
-                                            role["app_build"], [a.device_id])
-                step["app"] = role["app_build"]; step["mender_id"] = depid
+                depid = m.create_deployment(f"{req.name}-{a.role}-{swp_build}",
+                                            swp_build, [a.device_id])
+                step["swp"] = swp_build; step["app"] = swp_build; step["mender_id"] = depid
             except Exception as e:  # noqa: BLE001
                 step["app_error"] = str(e)
         result["steps"].append(step)

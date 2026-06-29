@@ -39,7 +39,7 @@ def create_app() -> FastAPI:
             "mender_server": s.mender_server,
             "mender_flavor": s.mender_flavor,
             "runtime_bucket": s.s3_runtime_bucket,
-            "apps_bucket": s.s3_apps_bucket,
+            "swp_bucket": s.s3_swp_bucket,
             "token_set": bool(s.mender_token),
             "auth_required": bool(s.api_key),
         }

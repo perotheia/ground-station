@@ -28,7 +28,7 @@ class Settings:
     s3_access_key: str = os.environ.get("MINIO_USER", "theia")
     s3_secret_key: str = os.environ.get("MINIO_PASSWORD", "theiaminio")
     s3_runtime_bucket: str = os.environ.get("S3_RUNTIME_BUCKET", "theia-runtime")
-    s3_apps_bucket: str = os.environ.get("S3_APPS_BUCKET", "theia-apps")
+    s3_swp_bucket: str = os.environ.get("S3_SWP_BUCKET", "theia-swp")
     s3_roles_bucket: str = os.environ.get("S3_ROLES_BUCKET", "theia-roles")
     s3_distributions_bucket: str = os.environ.get("S3_DISTRIBUTIONS_BUCKET", "theia-distributions")
 

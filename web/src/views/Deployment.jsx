@@ -77,7 +77,7 @@ function Targets({ sel, setSel, onAssigned }) {
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
-            <tr><th className="th">Name</th><th className="th">Base</th><th className="th">App</th><th className="th">St</th><th className="th text-right">ACT</th></tr>
+            <tr><th className="th">Name</th><th className="th">Base</th><th className="th">SWP</th><th className="th">St</th><th className="th text-right">ACT</th></tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
             {loading && !data && <tr><td className="cell text-muted" colSpan={5}>loading…</td></tr>}
@@ -229,7 +229,7 @@ function DistributionsColumn({ sel, setSel }) {
               <div className="font-semibold text-slate-100">{sel.name} <span className="font-mono">{sel.version}</span> · arity {sel.arity || sel.roles?.length}</div>
               {(sel.roles || []).map((r) => (
                 <div key={r.role} className="font-mono text-[11px]"><span className="text-slate-200">{r.role}</span>
-                  <span className="text-muted"> · {r.abi} · {r.runtime_build}{r.app_build ? ` · ${r.app_build}` : ''}</span></div>
+                  <span className="text-muted"> · {r.abi} · {r.runtime_build}{(r.swp_build || r.app_build) ? ` · ${r.swp_build || r.app_build}` : ''}</span></div>
               ))}
             </div>
           : 'Select a distribution to deploy.'}

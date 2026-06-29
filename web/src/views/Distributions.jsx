@@ -11,7 +11,7 @@ import { usePoll } from '../App'
 const ABIS = ['bookworm-arm64', 'focal-arm64', 'ubuntu24', 'amd64']
 const abiOf = (key) => ABIS.find((x) => (key || '').includes(x)) || ''
 
-function NewDistDialog({ apps, runtimes, appBuilds, onClose, onDone }) {
+function NewDistDialog({ apps, runtimes, swpBuilds, onClose, onDone }) {
   const [name, setName] = useState('')
   const [version, setVersion] = useState('1.0')
   const [appSel, setAppSel] = useState('')        // "fleet/app/version"
@@ -24,10 +24,10 @@ function NewDistDialog({ apps, runtimes, appBuilds, onClose, onDone }) {
   const roles = app?.roles?.length ? app.roles : (app ? ['default'] : [])
 
   const save = async () => {
-    if (!name.trim() || !app) { setErr('name + an app required'); return }
+    if (!name.trim() || !app) { setErr('name + a Software Package required'); return }
     const rolesPayload = roles.map((r) => ({
       role: r, abi: roleAbi[r] || '',
-      runtime_build: roleRt[r] || '', app_build: roleApp[r] || '',
+      runtime_build: roleRt[r] || '', swp_build: roleApp[r] || '', app_build: roleApp[r] || '',
     }))
     if (rolesPayload.some((r) => !r.runtime_build)) { setErr('pick a runtime build for every role'); return }
     setBusy(true); setErr(null)
@@ -46,9 +46,9 @@ function NewDistDialog({ apps, runtimes, appBuilds, onClose, onDone }) {
           <input className="input flex-1 text-sm" placeholder="distribution name (e.g. vehicle)" value={name} onChange={(e) => setName(e.target.value)} />
           <input className="input w-24 text-sm" placeholder="version" value={version} onChange={(e) => setVersion(e.target.value)} />
         </div>
-        <label className="block text-xs text-muted mb-1">App (defines arity + roles)</label>
+        <label className="block text-xs text-muted mb-1">Software Package (defines arity + roles)</label>
         <select className="input w-full text-sm mb-3" value={appSel} onChange={(e) => setAppSel(e.target.value)}>
-          <option value="">— pick an app —</option>
+          <option value="">— pick a Software Package —</option>
           {apps.map((a) => <option key={`${a.fleet}/${a.app}/${a.version}`} value={`${a.fleet}/${a.app}/${a.version}`}>
             {a.app} {a.version} /{a.arity || (a.roles?.length || 1)} [{(a.roles || []).join(', ') || 'single'}]
           </option>)}
@@ -59,7 +59,7 @@ function NewDistDialog({ apps, runtimes, appBuilds, onClose, onDone }) {
             {roles.map((r) => {
               const abi = roleAbi[r] || ''
               const rts = runtimes.filter((k) => !abi || abiOf(k) === abi)
-              const aps = appBuilds.filter((k) => !abi || abiOf(k) === abi)
+              const aps = swpBuilds.filter((k) => !abi || abiOf(k) === abi)
               return (
                 <div key={r} className="rounded border border-edge bg-ink/40 p-2 space-y-2">
                   <div className="text-sm font-semibold text-slate-200">role: {r}</div>
@@ -114,7 +114,7 @@ export function Distributions() {
     return out
   }, [appData])
   const runtimes = (rtData?.releases || []).filter((r) => !r._error).map((r) => r.key || r.version)
-  const appBuilds = apps.map((a) => a.app + '-' + a.version)   // app build keys (abi from name when present)
+  const swpBuilds = apps.map((a) => a.app + '-' + a.version)   // SWP build keys (abi from name when present)
 
   const del = async (d) => { try { await api.deleteDistribution(d.name, d.version); refresh() } catch (e) { alert(e.message) } }
 
@@ -140,7 +140,7 @@ export function Distributions() {
                 <td className="cell text-[11px] font-mono">
                   {(d.roles || []).map((r) => (
                     <div key={r.role}><span className="text-slate-200">{r.role}</span>
-                      <span className="text-muted"> · {r.abi} · {r.runtime_build}{r.app_build ? ` · ${r.app_build}` : ''}</span></div>
+                      <span className="text-muted"> · {r.abi} · {r.runtime_build}{(r.swp_build || r.app_build) ? ` · ${r.swp_build || r.app_build}` : ''}</span></div>
                   ))}
                 </td>
                 <td className="cell text-right">
@@ -151,7 +151,7 @@ export function Distributions() {
           </tbody>
         </table>
       </div>
-      {showNew && <NewDistDialog apps={apps} runtimes={runtimes} appBuilds={appBuilds}
+      {showNew && <NewDistDialog apps={apps} runtimes={runtimes} swpBuilds={swpBuilds}
         onClose={() => setShowNew(false)} onDone={() => { setShowNew(false); refresh() }} />}
     </div>
   )

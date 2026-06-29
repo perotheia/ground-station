@@ -64,7 +64,7 @@ def _app_requires_runtime(s, fleet: str, app: str, version: str) -> str:
     """The runtime an app version pins (its app-plane index.json requires_runtime).
     Empty = unpinned (arch-only). Read from the catalog (already walked)."""
     try:
-        for a in plane_client(s).apps_catalog():
+        for a in plane_client(s).swp_catalog():
             if (a.get("fleet") == fleet and a.get("app") == app
                     and str(a.get("version")) == str(version)):
                 return a.get("requires_runtime", "") or ""
@@ -107,12 +107,12 @@ def runtime_plane() -> dict:
 
 @router.get("/apps")
 def apps_plane() -> dict:
-    """The app vendoring catalog — every published app version, keyed fleet/app/ver."""
+    """The Software-Package catalog — every published SWP version, keyed fleet/app/ver."""
     s = settings()
     try:
-        cat = plane_client(s).apps_catalog()
+        cat = plane_client(s).swp_catalog()
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"app plane: {e}")
+        raise HTTPException(status_code=502, detail=f"package plane: {e}")
     # group by fleet → app → versions for the UI's vendoring tree
     pc = plane_client(s)
     locked = _deployed_versions(s)
@@ -141,7 +141,7 @@ def apps_plane() -> dict:
             "locked": str(a.get("artifact") or "") in locked or str(ver) in locked,
             "key": a.get("_key"), "files": a.get("files", []),
         })
-    return {"plane": "apps", "apps": cat, "tree": tree}
+    return {"plane": "swp", "swp": cat, "apps": cat, "tree": tree}
 
 
 @router.get("/roles")
@@ -171,7 +171,8 @@ class DistributionRole(BaseModel):
     role: str                        # the manifest role name (central / compute)
     abi: str                         # bookworm-arm64 / focal-arm64 / amd64 …
     runtime_build: str               # a runtime-plane key (e.g. 0.2.4-bookworm-arm64)
-    app_build: str = ""              # the app artifact for this role's abi ("" = base-only)
+    swp_build: str = ""              # the Software Package artifact for this role's abi ("" = base-only)
+    app_build: str = ""              # DEPRECATED alias for swp_build (read if swp_build empty)
 
 
 class DistributionRequest(BaseModel):
@@ -204,14 +205,15 @@ def create_distribution(req: DistributionRequest) -> dict:
         if r.abi and not r.runtime_build.endswith(r.abi):
             raise HTTPException(status_code=400,
                 detail=f"role {r.role}: runtime_build {r.runtime_build} is not abi {r.abi}")
-        if r.abi and r.app_build and (r.abi not in r.app_build):
+        swp_build = r.swp_build or r.app_build   # canonical, legacy fallback
+        if r.abi and swp_build and (r.abi not in swp_build):
             raise HTTPException(status_code=400,
-                detail=f"role {r.role}: app_build {r.app_build} is not abi {r.abi}")
+                detail=f"role {r.role}: swp_build {swp_build} is not abi {r.abi}")
     s = settings()
     try:
         key = plane_client(s).save_distribution(req.name, req.version, {
             "arity": len(req.roles),
-            "roles": [r.model_dump() for r in req.roles],
+            "roles": [{**r.model_dump(), "swp_build": (r.swp_build or r.app_build), "app_build": (r.swp_build or r.app_build)} for r in req.roles],
         })
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"save distribution: {e}")

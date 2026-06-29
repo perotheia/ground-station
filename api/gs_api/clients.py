@@ -75,11 +75,11 @@ def resolve_fleet(m, fleet: str) -> list[str]:
 # ---- MinIO distribution planes (S3) -------------------------------------------
 # boto3 is the only heavy dep; isolate it so the rest of the API imports without it.
 class PlaneClient:
-    """Reads the two distribution planes (theia-runtime, theia-apps) from MinIO.
+    """Reads the two distribution planes (theia-runtime, theia-swp) from MinIO.
 
     Each plane is keyed by an index.json that `theia release` writes:
       runtime:  theia-runtime/<ver>[-<distro>]/index.json   {version, distro, debs[]}
-      apps:     theia-apps/user-software/<fleet>/<app>/<ver>/index.json
+      swp:      theia-swp/user-software/<fleet>/<app>/<ver>/index.json
                                                             {fleet, app, version, files[]}
     The catalog = walk the bucket for index.json objects and parse them. This is
     the VENDORING view (what's publishable), distinct from Mender's deployed view.
@@ -94,7 +94,7 @@ class PlaneClient:
             aws_secret_access_key=s.s3_secret_key,
             config=Config(signature_version="s3v4"), region_name="us-east-1")
         self._runtime = s.s3_runtime_bucket
-        self._apps = s.s3_apps_bucket
+        self._swp = s.s3_swp_bucket
         self._roles = s.s3_roles_bucket
         self._dists = s.s3_distributions_bucket
 
@@ -122,10 +122,10 @@ class PlaneClient:
         return [i for i in self._indexes(self._runtime) if i.get("plane") == "runtime"
                 or "debs" in i or "_error" in i]
 
-    def apps_catalog(self) -> list[dict]:
-        """Every published app: {fleet, app, version, artifact, files[]}."""
-        return [i for i in self._indexes(self._apps) if i.get("plane") == "app"
-                or "app" in i or "_error" in i]
+    def swp_catalog(self) -> list[dict]:
+        """Every published Software Package: {fleet, app, version, artifact, files[]}."""
+        return [i for i in self._indexes(self._swp)
+                if i.get("plane") in ("swp", "app") or "app" in i or "_error" in i]
 
     def distributions_catalog(self) -> list[dict]:
         """Every Distribution (bundle): index.json under theia-distributions/
@@ -177,12 +177,12 @@ class PlaneClient:
         return out
 
     def presign(self, bucket_kind: str, key: str, expires: int = 3600) -> str:
-        bucket = self._runtime if bucket_kind == "runtime" else self._apps
+        bucket = self._runtime if bucket_kind == "runtime" else self._swp
         return self._s3.generate_presigned_url(
             "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=expires)
 
     def fetch(self, bucket_kind: str, key: str) -> bytes:
-        bucket = self._runtime if bucket_kind == "runtime" else self._apps
+        bucket = self._runtime if bucket_kind == "runtime" else self._swp
         return self._s3.get_object(Bucket=bucket, Key=key)["Body"].read()
 
     # ── plane management (Releases ACT: pin/delete) ──────────────────────────
@@ -191,7 +191,7 @@ class PlaneClient:
 
     def is_pinned(self, fleet: str, app: str, version: str) -> bool:
         try:
-            self._s3.head_object(Bucket=self._apps,
+            self._s3.head_object(Bucket=self._swp,
                                  Key=self.app_prefix(fleet, app, version) + ".pinned")
             return True
         except Exception:  # noqa: BLE001
@@ -200,9 +200,9 @@ class PlaneClient:
     def set_pin(self, fleet: str, app: str, version: str, pinned: bool) -> None:
         key = self.app_prefix(fleet, app, version) + ".pinned"
         if pinned:
-            self._s3.put_object(Bucket=self._apps, Key=key, Body=b"1")
+            self._s3.put_object(Bucket=self._swp, Key=key, Body=b"1")
         else:
-            self._s3.delete_object(Bucket=self._apps, Key=key)
+            self._s3.delete_object(Bucket=self._swp, Key=key)
 
     def delete_app(self, fleet: str, app: str, version: str) -> int:
         """Delete every object under the app version's prefix. Returns the count."""
@@ -213,10 +213,10 @@ class PlaneClient:
         if pfx.count("/") < 4 or pfx in ("user-software/", "/"):
             raise ValueError(f"delete_app: refusing unsafe prefix {pfx!r}")
         paginator = self._s3.get_paginator("list_objects_v2")
-        keys = [o["Key"] for page in paginator.paginate(Bucket=self._apps, Prefix=pfx)
+        keys = [o["Key"] for page in paginator.paginate(Bucket=self._swp, Prefix=pfx)
                 for o in page.get("Contents", [])]
         for k in keys:
-            self._s3.delete_object(Bucket=self._apps, Key=k)
+            self._s3.delete_object(Bucket=self._swp, Key=k)
         return len(keys)
 
     # ── RUNTIME plane management (same .pinned-marker model as apps, but on the
