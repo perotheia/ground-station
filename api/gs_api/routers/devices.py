@@ -211,9 +211,9 @@ def _observed() -> dict:
 
 
 class PreauthorizeRequest(BaseModel):
-    controller_id: str               # the device's mender IDENTITY (we generate a
-                                     # UUID; the device must report it as its
-                                     # mender identity for the preauth to match)
+    controller_id: str | None = None # the device's mender IDENTITY; server
+                                     # generates a UUID if omitted (the device
+                                     # must report it as its mender identity)
     pubkey: str                      # the device's public key (PEM the 3rd party gives us)
     name: str | None = None          # display name (Mender tag)
     fleet: str | None = None         # device_type (Type) — set as a tag too
@@ -272,17 +272,33 @@ def preauthorize(req: PreauthorizeRequest) -> dict:
     its mender identity; pubkey = the device's PEM key (from the 3rd party). When
     the device first connects with that identity+key Mender auto-accepts it.
     Name/Type/Description are recorded as Mender tags so the Target shows them."""
+    import uuid as _uuid
+    cid = req.controller_id or str(_uuid.uuid4())
     pub = (req.pubkey or "").strip()
-    if "BEGIN" not in pub or "PUBLIC KEY" not in pub:
-        raise HTTPException(status_code=400,
-                            detail="public key must be PEM (-----BEGIN PUBLIC KEY-----). "
-                                   "The 3rd party provides the device's PEM public key.")
+    if not pub:
+        raise HTTPException(status_code=400, detail="public key is required")
     s = settings()
+    # Normalize the key to the PEM SubjectPublicKeyInfo Mender requires. The
+    # operator may paste openssh ('ssh-rsa AAAA..') OR PEM — colony-api (has
+    # ssh-keygen) converts; gs-api is distroless. PEM passes through unchanged.
+    if "BEGIN PUBLIC KEY" not in pub:
+        from ..colony_client import colony_client
+        import json as _j
+        st, data = colony_client(s)._req("POST", "/normalize-key", {"key": pub})  # noqa: SLF001
+        if st != 200:
+            try:
+                why = _j.loads(data).get("detail", "")
+            except Exception:  # noqa: BLE001
+                why = data.decode(errors="replace")[:160]
+            raise HTTPException(status_code=400,
+                                detail=f"public key: paste an openssh 'ssh-rsa ..' line "
+                                       f"or a PEM public key. ({why})")
+        pub = _j.loads(data or b"{}").get("pem", pub)
     m = mender_client(s)
     try:
         # identity_data = {"device_id": <uuid>} — the device's mender identity must
         # match this. (MAC works too, but a UUID avoids the which-interface question.)
-        r = m.preauthorize({"device_id": req.controller_id}, pub)
+        r = m.preauthorize({"device_id": cid}, pub)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"preauthorize: {e}")
     # tag the resulting device with the operator metadata (best-effort; the device
@@ -298,7 +314,7 @@ def preauthorize(req: PreauthorizeRequest) -> dict:
                 m.set_tags(dev_id, tags)
             except Exception:  # noqa: BLE001
                 pass
-    return {"controller_id": req.controller_id, "status": "preauthorized", **r}
+    return {"controller_id": cid, "status": "preauthorized", **r}
 
 
 @router.get("/pending")

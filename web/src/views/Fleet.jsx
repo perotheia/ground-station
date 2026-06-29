@@ -88,6 +88,21 @@ const AUTH_COLOR = { base: '#42A5F5', app: '#AB47BC', state: '#78909C' }
 function Timeline({ device, onClose }) {
   const [tl, setTl] = useState(null)
   const [err, setErr] = useState(null)
+  const [localIp, setLocalIp] = useState(device.local_ip || '')
+  const [remoteIp, setRemoteIp] = useState(device.remote_ip || '')
+  const [ipMsg, setIpMsg] = useState(null)
+  const addVpn = async () => {
+    const ip = window.prompt('Remote (VPN) IP for this device:', remoteIp || '')
+    if (!ip) return
+    try { await api.addToVpn(device.id, ip.trim()); setRemoteIp(ip.trim()); setIpMsg('remote_ip set — ops now prefer it') }
+    catch (e) { setIpMsg(`vpn: ${e.message}`) }
+  }
+  const editLocal = async () => {
+    const ip = window.prompt('Local (on-site) IP for this device:', localIp || '')
+    if (!ip) return
+    try { await api.setIp(device.id, ip.trim(), 'local'); setLocalIp(ip.trim()); setIpMsg('local_ip set') }
+    catch (e) { setIpMsg(`ip: ${e.message}`) }
+  }
   useEffect(() => {
     let live = true
     api.deviceTimeline(device.id).then((d) => live && setTl(d)).catch((e) => live && setErr(e.message))
@@ -109,6 +124,15 @@ function Timeline({ device, onClose }) {
             {device.base_source && <span className="text-muted"> ({device.base_source})</span>}</span>
           <span>app: <span className="text-slate-300">{device.artifact || '—'}</span></span>
         </div>
+        {/* IP / reachability — local (deploy-time) + remote (VPN). We DON'T assume
+            local stays reachable; ops prefer remote_ip||local_ip. */}
+        <div className="text-xs mb-3 flex items-center gap-3 flex-wrap border-y border-edge/40 py-2">
+          <span className="text-muted">local_ip: <span className="font-mono text-slate-300">{localIp || '—'}</span>
+            <button className="icon-btn ml-1" title="set local IP" onClick={editLocal}>✎</button></span>
+          <span className="text-muted">remote_ip: <span className="font-mono text-slate-300">{remoteIp || '—'}</span></span>
+          <button className="btn-ghost text-xs ml-auto" onClick={addVpn}>Add to VPN</button>
+        </div>
+        {ipMsg && <div className="text-[11px] text-ok mb-2">{ipMsg}</div>}
         {err && <div className="text-xs text-red-400">timeline: {err}</div>}
         {!tl && !err && <div className="text-sm text-muted">loading timeline…</div>}
         {tl?.errors && <div className="text-[11px] text-amber-400 mb-2">partial: {Object.entries(tl.errors).map(([k, v]) => `${k}: ${v}`).join('; ')}</div>}

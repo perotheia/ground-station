@@ -412,8 +412,16 @@ export function Deployment() {
     try {
       if (selRel.kind === 'base') {
         const rig = target.attributes?.machine || target.name
-        const r = await api.deployBase(rig, 'orchestrate')
-        setMsg(`base deploy ${rig}: ${r.ok ? 'OK' : 'failed'} — progress in Action History`)
+        // The deploy target IP is the device's reachable_ip (remote_ip||local_ip).
+        // A preauthorized device has none → prompt for it (then it's recorded as
+        // local_ip + used as the colony host). We DON'T assume later reachability.
+        let ip = target.reachable_ip || null
+        if (!ip) {
+          ip = window.prompt(`No IP on record for ${rig}. Enter the target IP to deploy to:`)
+          if (!ip) { setMsg('deploy cancelled — a target IP is required'); setBusy(false); return }
+        }
+        const r = await api.deployBase(rig, 'orchestrate', ip, target.id)
+        setMsg(`base deploy ${rig} @ ${ip}: ${r.ok ? 'OK' : 'started'} — progress in Action History`)
       } else {
         const r = await api.publishApp(selRel.fleet, selRel.app, selRel.version, true)
         setMsg(r.deployment
