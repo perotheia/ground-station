@@ -65,4 +65,8 @@ export const api = {
     call('/planes/apps/pin', { method: 'POST', body: JSON.stringify({ fleet, app, version, pinned }) }),
   deleteApp: (fleet, app, version) =>
     call('/planes/apps', { method: 'DELETE', body: JSON.stringify({ fleet, app, version }) }),
+  pinRuntime: (key, pinned) =>
+    call('/planes/runtime/pin', { method: 'POST', body: JSON.stringify({ key, pinned }) }),
+  deleteRuntime: (key) =>
+    call('/planes/runtime', { method: 'DELETE', body: JSON.stringify({ key }) }),
 }

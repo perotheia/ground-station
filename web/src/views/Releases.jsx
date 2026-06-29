@@ -24,10 +24,11 @@ function Lock({ on }) {
 }
 
 export function Releases() {
-  const { data: rtData } = usePoll(() => api.runtimePlane(), [], 8000)
+  const { data: rtData, refresh: rtRefresh } = usePoll(() => api.runtimePlane(), [], 8000)
   const { data: appData, refresh } = usePoll(() => api.appsPlane(), [], 8000)
   const { data: roleData } = usePoll(() => api.rolesPlane(), [], 12000)
   const [confirm, setConfirm] = useState(null)
+  const [rtConfirm, setRtConfirm] = useState(null)
   const [busy, setBusy] = useState(null)
   const [note, setNote] = useState(null)
 
@@ -69,9 +70,19 @@ export function Releases() {
 
   const runtimes = (rtData?.releases || []).filter((r) => !r._error)
     .map((r) => ({ key: r.key || r.version, version: r.version, distro: r.distro,
-      locked: !!r.locked,
+      locked: !!r.locked, pinned: !!r.pinned,
       // which apps depend on THIS runtime (the dependency graph, reversed)
       dependents: apps.filter((a) => a.requires === (r.key || r.version)) }))
+
+  // Runtime ACT (same model as the app table): pin (📍/📌), delete (🗑) guarded
+  // by unpin-first AND lock (a deployed runtime is immutable).
+  const rtAct = async (key, fn, label) => {
+    setBusy(`rt:${key}`); setRtConfirm(null); setNote(null)
+    try { await fn(); rtRefresh() } catch (e) { setNote(`${label}: ${e.message}`) }
+    setBusy(null)
+  }
+  const pinRt = (r) => rtAct(r.key, () => api.pinRuntime(r.key, !r.pinned), 'pin')
+  const delRt = (r) => rtAct(r.key, () => api.deleteRuntime(r.key), 'delete')
 
   return (
     <div className="h-full grid grid-rows-[1fr_auto] gap-3">
@@ -87,6 +98,21 @@ export function Releases() {
                 <span className="font-mono text-sm text-slate-100">{r.key}</span>
                 <span className="text-xs text-muted">{r.distro}</span>
                 <Lock on={r.locked} />
+                {/* ACT: same pin/delete model + icons as the app table */}
+                <span className="ml-auto whitespace-nowrap">
+                  {rtConfirm === r.key
+                    ? <RowConfirm label="delete" onYes={() => delRt(r)} onNo={() => setRtConfirm(null)} />
+                    : busy === `rt:${r.key}` ? <span className="text-muted text-xs">…</span>
+                    : <span className="inline-flex gap-0.5">
+                        <button className="icon-btn" title={r.pinned ? 'unpin' : 'pin (guard from delete)'}
+                                onClick={() => pinRt(r)}>{r.pinned ? '📌' : '📍'}</button>
+                        <button className="icon-btn"
+                                title={r.locked ? 'locked: deployed, immutable' : r.pinned ? 'unpin before delete' : 'delete from plane'}
+                                disabled={r.pinned || r.locked}
+                                style={{ color: (r.pinned || r.locked) ? '#5a6b7d' : '#E57373' }}
+                                onClick={() => !r.pinned && !r.locked && setRtConfirm(r.key)}>🗑</button>
+                      </span>}
+                </span>
               </div>
               <div className="mt-2 text-xs text-muted">
                 {r.dependents.length === 0

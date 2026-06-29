@@ -95,10 +95,13 @@ def runtime_plane() -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"runtime plane: {e}")
     locked = _deployed_versions(s)
+    pc = plane_client(s)
     for r in rel:
         if "_error" in r:
             continue
-        r["locked"] = (r.get("key") or r.get("version")) in locked or str(r.get("version")) in locked
+        key = r.get("key") or r.get("version")
+        r["locked"] = key in locked or str(r.get("version")) in locked
+        r["pinned"] = pc.runtime_is_pinned(key) if key else False
     return {"plane": "runtime", "releases": rel}
 
 
@@ -277,3 +280,41 @@ def delete_app(req: AppRef) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"delete: {e}")
     return {"fleet": req.fleet, "app": req.app, "version": req.version, "deleted_objects": n}
+
+
+# ── Releases ACT — pin / delete RUNTIME-plane distributions (same model) ─────
+class RuntimeRef(BaseModel):
+    key: str                      # the runtime version dir, e.g. 0.2.4-bookworm-arm64
+
+
+class RuntimePinRequest(RuntimeRef):
+    pinned: bool
+
+
+@router.post("/runtime/pin", dependencies=[Depends(require_key)])
+def pin_runtime(req: RuntimePinRequest) -> dict:
+    """Pin/unpin a runtime release (a `.pinned` marker object in the runtime
+    plane). A pinned runtime is guarded from deletion. STATELESS — the pin lives
+    in S3 next to the release, not in GS."""
+    s = settings()
+    try:
+        plane_client(s).set_runtime_pin(req.key, req.pinned)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"runtime pin: {e}")
+    return {"key": req.key, "pinned": req.pinned}
+
+
+@router.delete("/runtime", dependencies=[Depends(require_key)])
+def delete_runtime(req: RuntimeRef) -> dict:
+    """Delete a runtime release from the S3 runtime plane. GUARDED — pinned (or
+    deployed/locked) runtimes must be unpinned first. Two-step destructive op."""
+    s = settings()
+    pc = plane_client(s)
+    if pc.runtime_is_pinned(req.key):
+        raise HTTPException(status_code=409,
+                            detail="runtime is pinned — unpin before deleting")
+    try:
+        n = pc.delete_runtime(req.key)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"delete runtime: {e}")
+    return {"key": req.key, "deleted_objects": n}

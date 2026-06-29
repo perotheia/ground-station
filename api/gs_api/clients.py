@@ -187,6 +187,37 @@ class PlaneClient:
             self._s3.delete_object(Bucket=self._apps, Key=k)
         return len(keys)
 
+    # ── RUNTIME plane management (same .pinned-marker model as apps, but on the
+    #    runtime bucket keyed by the version dir `<key>/`). GS stays STATELESS —
+    #    the pin is an S3 object next to the release, not GS-held state. ────────
+    def runtime_prefix(self, key: str) -> str:
+        return f"{key}/"          # the version dir, e.g. 0.2.4-bookworm-arm64/
+
+    def runtime_is_pinned(self, key: str) -> bool:
+        try:
+            self._s3.head_object(Bucket=self._runtime,
+                                 Key=self.runtime_prefix(key) + ".pinned")
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    def set_runtime_pin(self, key: str, pinned: bool) -> None:
+        marker = self.runtime_prefix(key) + ".pinned"
+        if pinned:
+            self._s3.put_object(Bucket=self._runtime, Key=marker, Body=b"1")
+        else:
+            self._s3.delete_object(Bucket=self._runtime, Key=marker)
+
+    def delete_runtime(self, key: str) -> int:
+        """Delete every object under a runtime version's prefix. Returns the count."""
+        pfx = self.runtime_prefix(key)
+        paginator = self._s3.get_paginator("list_objects_v2")
+        keys = [o["Key"] for page in paginator.paginate(Bucket=self._runtime, Prefix=pfx)
+                for o in page.get("Contents", [])]
+        for k in keys:
+            self._s3.delete_object(Bucket=self._runtime, Key=k)
+        return len(keys)
+
 
 def plane_client(s: Settings) -> PlaneClient:
     return PlaneClient(s)
