@@ -32,6 +32,13 @@ export const api = {
   runtimePlane: () => call('/planes/runtime'),
   appsPlane: () => call('/planes/apps'),
   rolesPlane: () => call('/planes/roles'),
+  distributions: () => call('/planes/distributions'),
+  createDistribution: (body) =>
+    call('/planes/distributions', { method: 'POST', body: JSON.stringify(body) }),
+  deleteDistribution: (name, version) =>
+    call('/planes/distributions', { method: 'DELETE', body: JSON.stringify({ name, version }) }),
+  deployDistribution: (body) =>
+    call('/deployments/distribution', { method: 'POST', body: JSON.stringify(body) }),
   publishApp: (fleet, app, version, deploy) =>
     call('/planes/apps/publish', {
       method: 'POST',
