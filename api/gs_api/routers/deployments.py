@@ -462,53 +462,74 @@ def _resolve_runtime(s, version: str, abi: str) -> str | None:
     return None
 
 
+class RoleAssignment(BaseModel):
+    role: str                        # the distribution role (central / compute)
+    device_id: str                   # the machine assigned to this role
+    ip: str | None = None            # deploy IP if the device has no reachable_ip
+
+
 class DistDeployRequest(BaseModel):
     name: str                        # distribution name
     version: str                     # distribution version
-    device_id: str                   # the target rig (Mender device)
-    ip: str | None = None            # deploy IP (if the rig has no local_ip)
+    assignments: list[RoleAssignment] = []   # role → machine (one per role)
 
 
 @router.post("/distribution", dependencies=[Depends(require_key)])
 def deploy_distribution(req: DistDeployRequest) -> dict:
-    """One-click: deploy a Distribution to a rig. Resolves the runtime to the rig's
-    ABI, base-deploys it (colony), then app-deploys each app (Mender)."""
+    """Deploy a Distribution: for EACH role, validate the assigned machine's abi
+    matches the role, then deploy that role's runtime_build (colony) + app_build
+    (Mender) to its machine. One logical deploy, N coordinated per-role actions.
+    Compatibility is enforced (machine.abi == role.abi) — the strict ER."""
     s = settings()
     m = mender_client(s)
-    # the distribution bundle
     dist = next((d for d in plane_client(s).distributions_catalog()
                  if d.get("name") == req.name and str(d.get("version")) == str(req.version)), None)
     if not dist:
         raise HTTPException(status_code=404, detail=f"distribution {req.name}:{req.version} not found")
-    # the target device (for ABI + IP)
-    dev = next((_flatten(d) for d in m.devices() if d.get("id") == req.device_id), None)
-    if not dev:
-        raise HTTPException(status_code=404, detail="target device not found")
-    abi = _rig_abi(dev)
-    rt_key = _resolve_runtime(s, dist.get("runtime_version", ""), abi)
-    result = {"distribution": f"{req.name}:{req.version}", "device": req.device_id,
-              "abi": abi, "runtime": rt_key, "steps": []}
-    if not rt_key:
-        raise HTTPException(status_code=409,
-                            detail=f"no runtime build for {dist.get('runtime_version')} on abi '{abi}' "
-                                   f"(rig {dev.get('name')}). Publish that ABI build first.")
-    # 1) base deploy via colony (the rig's resolved runtime)
-    rig = (dev.get("attributes", {}) or {}).get("machine") or dev.get("name")
-    ip = req.ip or dev.get("reachable_ip")
-    try:
-        dep = colony_client(s).create(rig, "orchestrate", host=ip)
-        if ip and req.device_id:
-            try: m.set_tags(req.device_id, {"local_ip": ip, "base_version": rt_key})
-            except Exception: pass  # noqa: BLE001
-        result["steps"].append({"base": rt_key, "rig": rig, "colony_id": dep.get("id")})
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"base deploy: {e}")
-    # 2) app deploy(s) via Mender
-    for a in dist.get("apps", []):
+    roles = {r["role"]: r for r in dist.get("roles", [])}
+    if not roles:
+        raise HTTPException(status_code=400, detail="distribution has no roles")
+    if len(req.assignments) != len(roles):
+        raise HTTPException(status_code=400,
+            detail=f"need a machine for each of {len(roles)} role(s): {sorted(roles)}")
+    # devices by id (for abi + ip)
+    devs = {d.get("id"): _flatten(d) for d in m.devices()}
+    result = {"distribution": f"{req.name}:{req.version}", "steps": []}
+    # validate ALL assignments first (fail before any deploy) — abi must match.
+    for a in req.assignments:
+        role = roles.get(a.role)
+        if not role:
+            raise HTTPException(status_code=400, detail=f"unknown role {a.role}")
+        dev = devs.get(a.device_id)
+        if not dev:
+            raise HTTPException(status_code=404, detail=f"device {a.device_id} not found")
+        m_abi = _rig_abi(dev)
+        if role.get("abi") and m_abi and m_abi != role["abi"]:
+            raise HTTPException(status_code=409,
+                detail=f"role {a.role} needs abi {role['abi']}, but {dev.get('name')} is {m_abi}")
+    # all valid → deploy per role
+    for a in req.assignments:
+        role = roles[a.role]
+        dev = devs[a.device_id]
+        rig = (dev.get("attributes", {}) or {}).get("machine") or dev.get("name")
+        ip = a.ip or dev.get("reachable_ip")
+        step = {"role": a.role, "device": a.device_id, "rig": rig}
+        # 1) base: the role's runtime_build via colony
         try:
-            devs = resolve_fleet(m, a["fleet"]) if a.get("fleet") else [req.device_id]
-            depid = m.create_deployment(f"{req.name}-{a['app']}-{a['version']}", a.get("artifact") or a["app"], devs or [req.device_id])
-            result["steps"].append({"app": a["app"], "version": a["version"], "mender_id": depid})
+            dep = colony_client(s).create(rig, "orchestrate", host=ip)
+            if ip:
+                try: m.set_tags(a.device_id, {"local_ip": ip, "base_version": role["runtime_build"]})
+                except Exception: pass  # noqa: BLE001
+            step["base"] = role["runtime_build"]; step["colony_id"] = dep.get("id")
         except Exception as e:  # noqa: BLE001
-            result["steps"].append({"app": a.get("app"), "error": str(e)})
+            step["base_error"] = str(e)
+        # 2) app: the role's app_build via Mender (to this one device)
+        if role.get("app_build"):
+            try:
+                depid = m.create_deployment(f"{req.name}-{a.role}-{role['app_build']}",
+                                            role["app_build"], [a.device_id])
+                step["app"] = role["app_build"]; step["mender_id"] = depid
+            except Exception as e:  # noqa: BLE001
+                step["app_error"] = str(e)
+        result["steps"].append(step)
     return result

@@ -167,17 +167,20 @@ def roles_plane() -> dict:
 
 
 # ── Distributions (UF concept): a bundle {app(s) + ABI-agnostic runtime} ─────
-class DistributionApp(BaseModel):
-    fleet: str
-    app: str
-    version: str
+class DistributionRole(BaseModel):
+    role: str                        # the manifest role name (central / compute)
+    abi: str                         # bookworm-arm64 / focal-arm64 / amd64 …
+    runtime_build: str               # a runtime-plane key (e.g. 0.2.4-bookworm-arm64)
+    app_build: str = ""              # the app artifact for this role's abi ("" = base-only)
 
 
 class DistributionRequest(BaseModel):
     name: str
     version: str
-    runtime_version: str             # ABI-AGNOSTIC (e.g. "0.2.4"); resolved per rig
-    apps: list[DistributionApp] = []
+    # The per-role RESOLVED builds — the strict ER. arity = len(roles). Each role's
+    # abi must equal its runtime_build/app_build abi (validated below). A machine is
+    # deploy-compatible with a role iff its probed abi == role.abi.
+    roles: list[DistributionRole] = []
 
 
 @router.get("/distributions")
@@ -192,17 +195,27 @@ def distributions_plane() -> dict:
 
 @router.post("/distributions", dependencies=[Depends(require_key)])
 def create_distribution(req: DistributionRequest) -> dict:
-    """Create/overwrite a Distribution bundle in S3 (stateless — the plane is the
-    source of truth)."""
+    """Create/overwrite a Distribution: per-role resolved builds, stored in S3.
+    Enforces the invariant role.abi == runtime_build's abi == app_build's abi (a
+    build key ends with its abi). arity = len(roles)."""
+    if not req.roles:
+        raise HTTPException(status_code=400, detail="a distribution needs >=1 role")
+    for r in req.roles:
+        if r.abi and not r.runtime_build.endswith(r.abi):
+            raise HTTPException(status_code=400,
+                detail=f"role {r.role}: runtime_build {r.runtime_build} is not abi {r.abi}")
+        if r.abi and r.app_build and (r.abi not in r.app_build):
+            raise HTTPException(status_code=400,
+                detail=f"role {r.role}: app_build {r.app_build} is not abi {r.abi}")
     s = settings()
     try:
         key = plane_client(s).save_distribution(req.name, req.version, {
-            "runtime_version": req.runtime_version,
-            "apps": [a.model_dump() for a in req.apps],
+            "arity": len(req.roles),
+            "roles": [r.model_dump() for r in req.roles],
         })
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"save distribution: {e}")
-    return {"name": req.name, "version": req.version, "key": key}
+    return {"name": req.name, "version": req.version, "arity": len(req.roles), "key": key}
 
 
 class DistributionRef(BaseModel):
