@@ -128,6 +128,12 @@ def apps_plane() -> dict:
             # the pinned runtime dependency (no backward compat) — the deploy gate
             # + the Releases dependency graph read this.
             "requires_runtime": a.get("requires_runtime", ""),
+            # ARITY: how many machines this app spans (from the manifest
+            # machines.json, recorded in app.json by release-app). roles = the
+            # machine NAMES. arity 1 = single rig; 2 = central+compute split.
+            # GS shows app/N; the per-role Distribution model uses the roles.
+            "arity": a.get("arity", len(a.get("roles", []) or []) or 1),
+            "roles": a.get("roles", []) or [],
             # operator pin (guards deletion) — a .pinned marker in the plane.
             "pinned": pc.is_pinned(fleet, app, str(ver)),
             # UF lock: a deployed artifact is immutable. The delete/overwrite ACT

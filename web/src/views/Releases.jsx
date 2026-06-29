@@ -50,6 +50,8 @@ export function Releases() {
         for (const v of vers) {
           out.push({ fleet, app, version: v.version,
             requires: v.requires_runtime || v.requires || '',
+            arity: v.arity || (v.roles ? v.roles.length : 1) || 1,
+            roles: v.roles || [],
             pinned: !!v.pinned, locked: !!v.locked })
         }
       }
@@ -138,7 +140,7 @@ export function Releases() {
               {apps.length === 0 && <tr><td className="cell text-muted" colSpan={5}>no apps published — run <code className="text-accent">theia release-app</code></td></tr>}
               {apps.map((a) => (
                 <tr key={`${a.fleet}/${a.app}/${a.version}`} className="hover:bg-edge/20">
-                  <td className="cell text-sm">{a.app}</td>
+                  <td className="cell text-sm">{a.app}{a.arity > 1 && <span className="badge bg-amber-500/15 text-amber-300 ml-1" title={`arity ${a.arity} — roles: ${a.roles.join(", ")}`}>/{a.arity}</span>}</td>
                   <td className="cell font-mono text-xs">{a.version}<Lock on={a.locked} /></td>
                   <td className="cell text-xs text-muted">{a.fleet}</td>
                   <td className="cell text-xs">
