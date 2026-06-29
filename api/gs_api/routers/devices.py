@@ -351,12 +351,16 @@ def list_groups() -> dict:
     Derived from the device inventory (every device carries its `group` attr) so
     we don't depend on a separate groups API surface."""
     s = settings()
+    m = mender_client(s)
     counts: dict[str, int] = {}
     try:
-        for d in mender_client(s).devices():
+        for d in m.devices():
             g = _flatten(d).get("group")
             if g:
                 counts[g] = counts.get(g, 0) + 1
+        # include groups defined in Mender that currently have 0 members
+        for g in m.list_groups():
+            counts.setdefault(g, 0)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"mender inventory: {e}")
     groups = [{"name": k, "count": v} for k, v in sorted(counts.items())]
@@ -376,6 +380,18 @@ def assign_group(device_id: str, req: GroupRequest) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"assign group: {e}")
     return {"device_id": device_id, "group": req.group}
+
+
+@router.delete("/{device_id}/group", dependencies=[Depends(_require_key)])
+def remove_group(device_id: str, group: str) -> dict:
+    """Remove a board from a Mender static group. The group name is the membership
+    key in Mender (DELETE .../group/<name>). Idempotent (404 = already out)."""
+    s = settings()
+    try:
+        mender_client(s).remove_from_group(device_id, group)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"remove group: {e}")
+    return {"device_id": device_id, "removed_from": group}
 
 
 # ── Merged timeline (P3): base (colony) + app (Mender) + state, chronological ──

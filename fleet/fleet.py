@@ -184,6 +184,23 @@ class Mender:
     def device_ids_in_group(self, group: str) -> list[str]:
         return [d["id"] for d in self.devices(group)]
 
+    def remove_from_group(self, device_id: str, group: str) -> bool:
+        """Remove a device from a Mender static group (DELETE the group membership).
+        Idempotent-ish: a 404 (not in the group) is treated as success."""
+        st, data, _ = self._req(
+            "DELETE",
+            f"/api/management/v1/inventory/devices/{device_id}/group/{group}")
+        if st not in (204, 200, 404):
+            raise RuntimeError(f"remove_from_group [{st}]: {data.decode(errors='replace')[:200]}")
+        return True
+
+    def list_groups(self) -> list[str]:
+        """All static group names defined in Mender inventory."""
+        st, data, _ = self._req("GET", "/api/management/v1/inventory/groups")
+        if st != 200:
+            raise RuntimeError(f"list_groups [{st}]: {data.decode(errors='replace')[:200]}")
+        return json.loads(data or b"[]")
+
     # ---- device lifecycle (deviceauth + inventory): the Connect-Device plumbing -
     def auth_devices(self) -> list:
         """Every device auth-set (deviceauth v2) — id, identity_data, status."""

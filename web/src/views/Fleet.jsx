@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { api } from '../api'
 import { usePoll } from '../App'
 
@@ -157,19 +157,67 @@ function GroupCell({ device, groups, onChanged }) {
   )
 }
 
+// One device row — extracted so it can render flat or under a group header.
+function DeviceRow({ d, groups, onSelect, reload }) {
+  return (
+    <tr className="hover:bg-edge/20 cursor-pointer" onClick={() => onSelect(d)}>
+      <td className="cell font-mono text-xs">{d.name || d.id?.slice(0, 12)}</td>
+      <td className="cell text-xs">{d.fleet || <span className="text-muted">—</span>}</td>
+      <td className="cell text-xs"><GroupCell device={d} groups={groups} onChanged={reload} /></td>
+      <td className="cell text-xs font-mono">
+        {d.base_version || <span className="text-muted">—</span>}
+        {d.base_source === 'mirror' && <span title="from Mender mirror tag, not a live supervisor read" className="ml-1 text-amber-400">◐</span>}
+      </td>
+      <td className="cell text-xs">{d.artifact || <span className="text-muted">—</span>}</td>
+      <td className="cell text-xs"><Pill v={d.health} /></td>
+      <td className="cell text-xs"><Pill v={d.sm_state} /></td>
+      <td className="cell text-xs"><Pill v={d.ucm_version} /></td>
+      <td className="cell flex items-center gap-2 text-xs">
+        <Dot s={d.connected} /><span className="text-muted">{d.connected}</span>
+      </td>
+    </tr>
+  )
+}
+
+// The grouping AXIS for the device list. Group = explicit (static Mender group,
+// written membership). Fleet/App = IMPLICIT (client-side, derived from the live
+// inventory; these become Mender DYNAMIC groups once reporting reindex is wired).
+const GROUP_AXES = {
+  none: () => null,
+  Fleet: (d) => d.fleet || '(no fleet)',
+  App: (d) => d.artifact || '(no app)',
+  Group: (d) => d.group || '(ungrouped)',
+}
+
 export function Fleet() {
   const { data, loading, error, refresh } = usePoll(() => api.devices(), [], 6000)
   const { data: gdata, refresh: grefresh } = usePoll(() => api.groups(), [], 30000)
   const [showConnect, setShowConnect] = useState(false)
   const [selected, setSelected] = useState(null)
+  const [groupBy, setGroupBy] = useState('none')
   const devices = data?.devices || []
   const groups = gdata?.groups || []
   const reload = () => { refresh(); grefresh() }
+
+  // segment devices by the chosen axis (sorted by group key)
+  const keyer = GROUP_AXES[groupBy] || GROUP_AXES.none
+  const sections = useMemo(() => {
+    if (groupBy === 'none') return null
+    const by = {}
+    for (const d of devices) (by[keyer(d)] ||= []).push(d)
+    return Object.keys(by).sort().map((k) => ({ key: k, rows: by[k] }))
+  }, [devices, groupBy])
+
   return (
     <div className="pane h-full">
       <div className="pane-head">
         Fleet
         <span className="text-muted font-normal text-xs ml-2">{devices.length} device(s) · {groups.length} group(s)</span>
+        <span className="ml-3 text-xs text-muted">Group by:</span>
+        <select className="bg-transparent text-xs ml-1 outline-none cursor-pointer text-slate-200"
+                value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
+          {Object.keys(GROUP_AXES).map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
         <span className="ml-auto flex gap-1">
           <button className="btn" onClick={() => setShowConnect(true)}>Connect Device</button>
           <button className="btn-ghost" onClick={reload}>Refresh</button>
@@ -195,24 +243,22 @@ export function Fleet() {
             {loading && !data && <tr><td className="cell text-muted" colSpan={9}>loading…</td></tr>}
             {error && <tr><td className="cell text-red-300" colSpan={9}>fleet unavailable (Mender error) — see banner above</td></tr>}
             {!loading && !error && devices.length === 0 && <tr><td className="cell text-muted" colSpan={9}>no devices enrolled</td></tr>}
-            {devices.map((d) => (
-              <tr key={d.id} className="hover:bg-edge/20 cursor-pointer" onClick={() => setSelected(d)}>
-                <td className="cell font-mono text-xs">{d.name || d.id?.slice(0, 12)}</td>
-                <td className="cell text-xs">{d.fleet || <span className="text-muted">—</span>}</td>
-                <td className="cell text-xs"><GroupCell device={d} groups={groups} onChanged={reload} /></td>
-                <td className="cell text-xs font-mono">
-                  {d.base_version || <span className="text-muted">—</span>}
-                  {d.base_source === 'mirror' && <span title="from Mender mirror tag, not a live supervisor read" className="ml-1 text-amber-400">◐</span>}
-                </td>
-                <td className="cell text-xs">{d.artifact || <span className="text-muted">—</span>}</td>
-                <td className="cell text-xs"><Pill v={d.health} /></td>
-                <td className="cell text-xs"><Pill v={d.sm_state} /></td>
-                <td className="cell text-xs"><Pill v={d.ucm_version} /></td>
-                <td className="cell flex items-center gap-2 text-xs">
-                  <Dot s={d.connected} />
-                  <span className="text-muted">{d.connected}</span>
-                </td>
-              </tr>
+            {/* flat list */}
+            {!sections && devices.map((d) => (
+              <DeviceRow key={d.id} d={d} groups={groups} onSelect={setSelected} reload={reload} />
+            ))}
+            {/* grouped: a header row per section, then its devices */}
+            {sections && sections.map((s) => (
+              <React.Fragment key={s.key}>
+                <tr className="bg-edge/30">
+                  <td className="cell text-xs font-semibold text-slate-200" colSpan={9}>
+                    {groupBy}: {s.key} <span className="text-muted font-normal">· {s.rows.length}</span>
+                  </td>
+                </tr>
+                {s.rows.map((d) => (
+                  <DeviceRow key={d.id} d={d} groups={groups} onSelect={setSelected} reload={reload} />
+                ))}
+              </React.Fragment>
             ))}
           </tbody>
         </table>

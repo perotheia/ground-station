@@ -57,6 +57,8 @@ export const api = {
   groups: () => call('/devices/groups/list'),
   assignGroup: (id, group) =>
     call(`/devices/${id}/group`, { method: 'POST', body: JSON.stringify({ group }) }),
+  removeGroup: (id, group) =>
+    call(`/devices/${id}/group?group=${encodeURIComponent(group)}`, { method: 'DELETE' }),
   deviceTimeline: (id) => call(`/devices/${id}/timeline`),
 
   // ── BASE deployment (colony) ──────────────────────────────────────────────
