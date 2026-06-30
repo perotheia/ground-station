@@ -85,8 +85,8 @@ export const api = {
   deviceTimeline: (id) => call(`/devices/${id}/timeline`),
 
   // ── BASE deployment (colony) ──────────────────────────────────────────────
-  deployBase: (rig, kind = 'orchestrate', ip, device_id) =>
-    call('/deployments/base', { method: 'POST', body: JSON.stringify({ rig, kind, ip, device_id }) }),
+  deployBase: (rig, kind = 'orchestrate', ip, device_id, scope) =>
+    call('/deployments/base', { method: 'POST', body: JSON.stringify({ rig, kind, ip, device_id, scope }) }),
 
   // ── Releases plane management (ACT: pin/delete) ───────────────────────────
   pinApp: (fleet, app, version, pinned) =>

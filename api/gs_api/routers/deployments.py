@@ -116,6 +116,8 @@ class BaseDeployRequest(BaseModel):
     ip: str | None = None            # explicit target IP (preauth device w/ no
                                      # local_ip → the Deploy prompt supplies it)
     device_id: str | None = None     # the Mender device, to record local_ip on
+    scope: dict | None = None        # cleanup SCOPE {app, runtime, mender} (bools);
+                                     # None → colony defaults (app+runtime).
 
 
 @router.post("/base", dependencies=[Depends(require_key)])
@@ -137,7 +139,12 @@ def deploy_base(req: BaseDeployRequest) -> dict:
             mender_client(s).set_tags(req.device_id, {"local_ip": req.ip})
         except Exception:  # noqa: BLE001
             pass            # tag is best-effort; the deploy still uses the IP
-    dep = col.create(req.rig, req.kind, req.schedule, host=req.ip)
+    # cleanup scope → ansible clean_app/clean_runtime/clean_mender flags.
+    extra = None
+    if req.kind == "cleanup" and req.scope is not None:
+        extra = {f"clean_{k}": bool(v) for k, v in req.scope.items()
+                 if k in ("app", "runtime", "mender")}
+    dep = col.create(req.rig, req.kind, req.schedule, host=req.ip, extra=extra)
     did = dep["id"]
     if req.schedule:          # future-dated → don't block; mirror later
         return {"deployment": dep, "mirrored": False, "note": "scheduled; mirror on finish"}
@@ -151,7 +158,8 @@ def deploy_base(req: BaseDeployRequest) -> dict:
     stats = (dep.get("statistics") or {}).get("status", {})
     ok = stats.get("success", 0) > 0 and stats.get("failure", 0) == 0
     mirrored = False
-    if req.kind == "cleanup" and ok:
+    _scope = req.scope or {"app": True, "runtime": True}
+    if req.kind == "cleanup" and ok and _scope.get("runtime", True):
         # the device was deprovisioned — drop the colony base-state tags so the
         # Fleet UI stops showing a stale base_version. Keep the operator tags
         # (name / local_ip / remote_ip / device_type); the PUT replaces ALL

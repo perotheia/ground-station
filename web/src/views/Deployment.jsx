@@ -35,11 +35,45 @@ function RowConfirm({ label, onYes, onNo }) {
 // ── Create New Target — SSH-probe enrolment modal ────────────────────────────
 // Operator types a Host IP → reload → colony-api SSHes it → prefill Controller ID
 // (MAC, the stable Mender identity) + Name (hostname). Type from Mender (stateless).
+
+// Cleanup scope dialog: pick which layers to remove. app = the SWP overlay
+// (keep the runtime); runtime = the whole /opt/theia base; mender-state = the
+// device mender key/identity (forces re-enrol). Default app+runtime.
+function CleanupDialog({ device, onClose, onRun }) {
+  const [app, setApp] = useState(true)
+  const [runtime, setRuntime] = useState(true)
+  const [mender, setMender] = useState(false)
+  const Row = ({ on, set, name, desc }) => (
+    <label className="flex items-start gap-2 text-sm py-1 cursor-pointer">
+      <input type="checkbox" checked={on} onChange={(e) => set(e.target.checked)} className="mt-1" />
+      <span><span className="text-slate-200">{name}</span>
+        <span className="block text-[11px] text-muted">{desc}</span></span>
+    </label>
+  )
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="card w-[28rem] p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center mb-3">
+          <h3 className="font-medium flex-1" style={{ color: '#E57373' }}>Cleanup {device.name || device.id?.slice(0, 12)}</h3>
+          <button className="text-slate-400 hover:text-slate-200" onClick={onClose}>✕</button>
+        </div>
+        <div className="text-xs text-muted mb-2">Remove the selected layers (the device stays enrolled):</div>
+        <Row on={app} set={setApp} name="App (Software Package)" desc="the SWP overlay — app FCs + executor nodes; keeps the runtime" />
+        <Row on={runtime} set={setRuntime} name="Runtime (base)" desc="the whole /opt/theia — supervisor + services + app" />
+        <Row on={mender} set={setMender} name="Mender state" desc="the device mender key + identity — forces RE-ENROL. Leave off normally." />
+        <button className="btn w-full mt-3" disabled={!app && !runtime && !mender}
+                onClick={() => onRun({ app, runtime, mender })}>Cleanup →</button>
+      </div>
+    </div>
+  )
+}
+
 function Targets({ sel, setSel, onAssigned }) {
   const { data, loading, error, refresh } = usePoll(() => api.devices(), [], 6000)
   const devices = data?.devices || []
   const selDev = devices.find((d) => d.id === sel)
-  const [confirm, setConfirm] = useState(null)   // device id awaiting cleanup confirm
+  const [confirm, setConfirm] = useState(null)   // device id awaiting del confirm
+  const [cleanDlg, setCleanDlg] = useState(null)  // device awaiting cleanup-scope dialog
   const [busy, setBusy] = useState(null)
   const [note, setNote] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
@@ -51,10 +85,11 @@ function Targets({ sel, setSel, onAssigned }) {
     setBusy(null)
   }
   // zero-arity Cleanup: keep enrolled, remove software (= colony cleanup <rig>).
-  const cleanup = (d) => act(d, async () => {
+  const cleanup = (d, scope) => act(d, async () => {
     const rig = d.attributes?.machine || d.name
-    const r = await api.deployBase(rig, 'cleanup')
-    setNote(`cleanup ${rig}: ${r.ok ? 'ok' : 'failed'} — progress in Action History`)
+    const r = await api.deployBase(rig, 'cleanup', undefined, d.id, scope)
+    const layers = Object.entries(scope).filter(([, v]) => v).map(([k]) => k).join('+')
+    setNote(`cleanup ${rig} [${layers}]: ${r.ok ? 'ok' : 'failed'} — progress in Action History`)
   }, 'cleanup')
   const pin = (d) => act(d, () => api.pinDevice(d.id, !d.pinned), 'pin')
   const del = (d) => act(d, () => api.decommission(d.id), 'delete')
@@ -91,16 +126,14 @@ function Targets({ sel, setSel, onAssigned }) {
                 <td className="cell text-xs text-muted">{d.artifact || '—'}</td>
                 <td className="cell"><StatusDot s={d.connected} /></td>
                 <td className="cell text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                  {confirm === `clean:${d.id}`
-                    ? <RowConfirm label="cleanup" onYes={() => cleanup(d)} onNo={() => setConfirm(null)} />
-                    : confirm === `del:${d.id}`
+                  {confirm === `del:${d.id}`
                     ? <RowConfirm label="delete" onYes={() => del(d)} onNo={() => setConfirm(null)} />
                     : busy === d.id ? <span className="text-muted text-xs">…</span>
                     : <span className="inline-flex gap-0.5">
                         <button className="icon-btn" title={d.pinned ? 'unpin' : 'pin (guard from delete)'}
                                 onClick={() => pin(d)}>{d.pinned ? '📌' : '📍'}</button>
                         <button className="icon-btn" title="cleanup (keep enrolled, remove software)"
-                                onClick={() => setConfirm(`clean:${d.id}`)}>🧹</button>
+                                onClick={(e) => { e.stopPropagation(); setCleanDlg(d) }}>🧹</button>
                         <button className="icon-btn" title={d.pinned ? 'unpin before delete' : 'delete (decommission)'}
                                 disabled={d.pinned}
                                 style={{ color: d.pinned ? '#5a6b7d' : '#E57373' }}
@@ -118,6 +151,9 @@ function Targets({ sel, setSel, onAssigned }) {
         Total Targets: {devices.length}
       </div>
       {showCreate && <CreateTargetModal onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); refresh() }} />}
+      {cleanDlg && <CleanupDialog device={cleanDlg}
+        onClose={() => setCleanDlg(null)}
+        onRun={(scope) => { const d = cleanDlg; setCleanDlg(null); cleanup(d, scope) }} />}
     </div>
   )
 }
@@ -240,18 +276,21 @@ function DistributionsColumn({ sel, setSel }) {
 
 // Role → compatible-machine assignment dialog (deploy a distribution). Only
 // machines whose probed abi matches a role's abi are offered for that role.
+// A device's abi (mirrors the backend _rig_abi heuristic): os+kernel →
+// bookworm-arm64 / focal-arm64 / amd64 / …
+function _devAbi(d) {
+  const os = (d.attributes?.os || '').toLowerCase(), k = (d.attributes?.kernel || '').toLowerCase()
+  const arch = /aarch64|arm64/.test(k + os) ? 'arm64' : /x86_64|amd64/.test(k) ? 'amd64' : ''
+  const distro = /focal|20\.04/.test(os) ? 'focal' : /bookworm|trixie|debian gnu\/linux 1[23]/.test(os) ? 'bookworm'
+    : /ubuntu.*24/.test(os) ? 'ubuntu24' : ''
+  return [distro, arch].filter(Boolean).join('-')
+}
+
 function DeployDistDialog({ dist, devices, onClose, onDone }) {
   const [assign, setAssign] = useState({})   // role -> device_id
   const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null)
   const roles = dist.roles || []
-  // a device's abi (mirror the backend _rig_abi heuristic, loosely)
-  const devAbi = (d) => {
-    const os = (d.attributes?.os || '').toLowerCase(), k = (d.attributes?.kernel || '').toLowerCase()
-    const arch = /aarch64|arm64/.test(k + os) ? 'arm64' : /x86_64|amd64/.test(k) ? 'amd64' : ''
-    const distro = /focal|20\.04/.test(os) ? 'focal' : /bookworm|trixie|debian gnu\/linux 1[23]/.test(os) ? 'bookworm'
-      : /ubuntu.*24/.test(os) ? 'ubuntu24' : ''
-    return [distro, arch].filter(Boolean).join('-')
-  }
+  const devAbi = _devAbi
   const deploy = async () => {
     const assignments = roles.map((r) => ({ role: r.role, device_id: assign[r.role] }))
     if (assignments.some((a) => !a.device_id)) { setMsg('assign a machine to every role'); return }
@@ -302,14 +341,33 @@ export function Deployment() {
   const [showDeploy, setShowDeploy] = useState(false)
   const [msg, setMsg] = useState(null)
 
+  // Deploy click: an ARITY-1 dist + a selected target whose abi matches the
+  // single role → deploy DIRECTLY (no dialog). Otherwise open the role-assign
+  // dialog (arity-2+, or no target picked, or abi mismatch).
+  const onDeployClick = async () => {
+    const roles = selDist.roles || []
+    const arity = selDist.arity || roles.length || 1
+    if (target && arity === 1 && roles[0] &&
+        (!roles[0].abi || _devAbi(target) === roles[0].abi)) {
+      try {
+        const res = await api.deployDistribution({ name: selDist.name, version: selDist.version,
+          assignments: [{ role: roles[0].role, device_id: target.id }] })
+        setMsg(`deployed ${selDist.name}:${selDist.version} → ${target.name} — progress in Action History`)
+      } catch (e) { setMsg(`deploy: ${e.message}`) }
+      return
+    }
+    setShowDeploy(true)
+  }
+
   return (
     <div className="h-full flex flex-col gap-2">
       {/* deploy action bar — Distribution-driven */}
       <div className="flex items-center gap-3 text-sm">
         <span className="text-muted">Distribution:</span>
         <span className="font-mono text-slate-200">{selDist ? `${selDist.name} ${selDist.version} /${selDist.arity || selDist.roles?.length}` : '— select —'}</span>
+        {target && <span className="text-muted">→ <span className="text-slate-200">{target.name}</span></span>}
         <button className="btn ml-auto" disabled={!selDist} title={!selDist ? 'select a distribution' : ''}
-                onClick={() => setShowDeploy(true)}>Deploy →</button>
+                onClick={onDeployClick}>Deploy →</button>
       </div>
       {msg && <div className="card px-3 py-1.5 text-xs text-slate-300">{msg}</div>}
       {/* 3-column board: Targets | Distributions | Action History */}

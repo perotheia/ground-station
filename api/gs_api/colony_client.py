@@ -50,10 +50,11 @@ class Colony:
 
     def create(self, rig: str, kind: str = "orchestrate",
                schedule: float | None = None, name: str | None = None,
-               host: str | None = None) -> dict:
+               host: str | None = None, extra: dict | None = None) -> dict:
         st, data = self._req("POST", "/deployments",
                              {"rig": rig, "kind": kind,
-                              "schedule": schedule, "name": name, "host": host})
+                              "schedule": schedule, "name": name, "host": host,
+                              "extra": extra})
         if st not in (200, 201):
             raise RuntimeError(f"colony create [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"{}")
