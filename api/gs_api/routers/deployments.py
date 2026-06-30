@@ -13,6 +13,7 @@ from .. import com_client
 from ..auth import require_key
 from ..clients import mender_client, plane_client, resolve_fleet
 from ..colony_client import colony_client
+from .devices import _flatten  # shared device flatten helper
 from ..settings import settings
 
 router = APIRouter(prefix="/api/deployments", tags=["deployments"])
