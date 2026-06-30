@@ -190,29 +190,71 @@ function TargetDetails({ dev }) {
   )
 }
 
+// One Action-History entry per colony/Mender action. Each colony KIND
+// (provision / orchestrate / cleanup) and the app (Mender) are SEPARATE rows, so
+// the operator follows progress per layer: pending → installing → OK/NOK.
+const ACTION_LABEL = {
+  provision:   ['Provision', 'etcd / network / mender'],
+  orchestrate: ['Orchestrate', 'runtime + services (base)'],
+  cleanup:     ['Cleanup', 'remove software'],
+}
+// lifecycle → {text, color}. colony: pending/inprogress/finished(+stats);
+// Mender: pending/inprogress/finished/failure/already-installed/aborted.
+function lifecycle(d) {
+  const st = d.status
+  if (st === 'finished' || st === 'finished/success' || st === 'success') {
+    const s = d.statistics?.status || {}
+    const fail = (s.failure || 0) > 0 || st === 'failure'
+    const ok = !fail
+    return { text: ok ? 'OK' : 'NOK', color: ok ? '#4CAF50' : '#E57373' }
+  }
+  if (st === 'failure' || st === 'aborted') return { text: 'NOK', color: '#E57373' }
+  if (st === 'inprogress' || st === 'installing' || st === 'downloading')
+    return { text: 'installing…', color: '#FFB300' }
+  if (st === 'already-installed') return { text: 'OK', color: '#4CAF50' }
+  return { text: st || 'pending', color: '#64B5F6' }   // pending / scheduled / …
+}
+function actionLabel(d) {
+  if (d.authority === 'base') {
+    const [name, sub] = ACTION_LABEL[d.kind] || [d.kind || 'base', '']
+    return { name, sub: `${d.rig || ''}${sub ? ' · ' + sub : ''}`.trim() }
+  }
+  // app (Mender): the artifact is the SWP; the deployment name carries the role.
+  return { name: 'App', sub: d.artifact_name || d.name || '' }
+}
+
 function ActionHistory({ targetName }) {
-  const { data } = usePoll(() => api.deployments(), [], 6000)
-  const rows = (data?.deployments || []).slice(0, 40)
+  const { data } = usePoll(() => api.deployments(), [], 4000)
+  let rows = data?.deployments || []
+  // filter to the selected target: colony rows by rig, app rows by name-contains.
+  if (targetName) {
+    rows = rows.filter((d) => (d.authority === 'base' && d.rig === targetName)
+      || (d.authority === 'app' && String(d.name || '').includes(targetName)))
+  }
+  rows = rows.slice(0, 50)
   return (
     <div className="pane min-h-0">
       <div className="pane-head">Action History {targetName ? <span className="text-muted font-normal">: {targetName}</span> : ''}</div>
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
-            <tr><th className="th">Plane</th><th className="th">Distribution</th><th className="th">Date</th><th className="th">Status</th></tr>
+            <tr><th className="th">Plane</th><th className="th">Action</th><th className="th">Date</th><th className="th">Status</th></tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
             {rows.map((d) => {
-              const s = d.statistics?.status || {}
-              const ok = (s.success || 0) > 0 && !(s.failure > 0)
+              const lc = lifecycle(d)
+              const a = actionLabel(d)
+              const live = !['finished', 'failure', 'aborted', 'success', 'already-installed'].includes(d.status)
               return (
                 <tr key={d.id} className="hover:bg-edge/20">
                   <td className="cell"><span className={`badge ${d.authority === 'base' ? 'bg-violet-500/15 text-violet-300' : 'bg-cyan-500/15 text-cyan-300'}`}>{d.authority || 'app'}</span></td>
-                  <td className="cell text-xs">{d.artifact_name || d.name}</td>
+                  <td className="cell text-xs"><span className="text-slate-200">{a.name}</span>
+                    {a.sub && <span className="block text-[10px] text-muted font-mono">{a.sub}</span>}</td>
                   <td className="cell text-[11px] text-muted">{fmtTs(d.created || d.created_ts)}</td>
-                  <td className="cell">{d.status === 'finished'
-                    ? <span style={{ color: ok ? '#4CAF50' : '#E57373' }}>{ok ? '✓' : '✕'}</span>
-                    : <span className="text-sky-400 text-xs">{d.status}</span>}</td>
+                  <td className="cell text-xs" style={{ color: lc.color }}>
+                    {live && <span className="inline-block w-1.5 h-1.5 rounded-full mr-1 animate-pulse" style={{ background: lc.color }} />}
+                    {lc.text}
+                  </td>
                 </tr>
               )
             })}

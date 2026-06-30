@@ -50,8 +50,19 @@ def list_deployments() -> dict:
     except Exception as e:  # noqa: BLE001
         errors["base"] = str(e)
 
-    rows.sort(key=lambda d: str(d.get("created") or d.get("created_ts") or 0),
-              reverse=True)
+    # Normalize the two planes timestamps to a comparable epoch: colony rows carry
+    # a float epoch (created/created_ts), Mender rows an ISO-8601 string. A naive
+    # string sort interleaves them wrong, so map both to seconds-since-epoch.
+    def _epoch(d) -> float:
+        c = d.get("created") or d.get("created_ts") or 0
+        if isinstance(c, (int, float)):
+            return float(c)
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(str(c).replace("Z", "+00:00")).timestamp()
+        except Exception:  # noqa: BLE001
+            return 0.0
+    rows.sort(key=_epoch, reverse=True)
     out: dict = {"deployments": rows, "count": len(rows)}
     if errors:
         out["errors"] = errors
