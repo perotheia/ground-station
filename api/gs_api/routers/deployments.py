@@ -579,3 +579,26 @@ def deploy_distribution(req: DistDeployRequest) -> dict:
                 step["app_error"] = str(e)
         result["steps"].append(step)
     return result
+
+class ClearActionsRequest(BaseModel):
+    rig: str                         # the colony rig name (e.g. central)
+    before: float | None = None      # epoch; app rows older are UI-hidden
+                                     # (Mender owns its records — not deletable)
+
+@router.post("/clear", dependencies=[Depends(require_key)])
+def clear_actions(req: ClearActionsRequest) -> dict:
+    """Clear FINISHED actions for a target: prune colony's base entries
+    (provision/orchestrate/cleanup) from its journal, and return a
+    `cleared_before` epoch the UI uses to hide this target's app (Mender)
+    rows — Mender owns those records, so the app side is a UI-only hide."""
+    import time
+    s = settings()
+    pruned = 0
+    try:
+        r = colony_client(s).prune(req.rig, finished_only=True)
+        pruned = r.get("pruned", 0)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"clear (colony): {e}")
+    return {"rig": req.rig, "colony_pruned": pruned,
+            "cleared_before": req.before or time.time()}
+

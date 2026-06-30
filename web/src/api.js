@@ -26,6 +26,8 @@ export const api = {
     return call(`/devices${s ? `?${s}` : ''}`)
   },
   deployments: () => call('/deployments'),
+  clearActions: (rig, before) =>
+    call('/deployments/clear', { method: 'POST', body: JSON.stringify({ rig, before }) }),
   deployment: (id) => call(`/deployments/${id}`),
   artifacts: () => call('/deployments/artifacts/list'),
   createDeployment: (artifact_name, group, name) =>

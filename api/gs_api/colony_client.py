@@ -59,6 +59,15 @@ class Colony:
             raise RuntimeError(f"colony create [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"{}")
 
+    def prune(self, rig: str | None = None, finished_only: bool = True) -> dict:
+        """Prune colony journal entries (DELETE /deployments). Default the
+        finished base actions for `rig`."""
+        q = f"?rig={rig}&finished_only={'true' if finished_only else 'false'}"
+        st, data = self._req("DELETE", "/deployments" + q)
+        if st not in (200, 204):
+            raise RuntimeError(f"colony prune [{st}]: {data.decode(errors='replace')[:200]}")
+        return json.loads(data or b"{}")
+
     def log(self, did: str) -> str:
         st, data = self._req("GET", f"/deployments/{did}/log")
         if st != 200:

@@ -223,18 +223,45 @@ function actionLabel(d) {
   return { name: 'App', sub: d.artifact_name || d.name || '' }
 }
 
-function ActionHistory({ targetName }) {
-  const { data } = usePoll(() => api.deployments(), [], 4000)
+function ActionHistory({ targetName, targetRig }) {
+  const { data, refresh } = usePoll(() => api.deployments(), [], 4000)
+  const rig = targetRig || targetName
+  // per-target 'cleared before' epoch (seconds) — hides app rows the operator
+  // cleared (Mender keeps its own records; colony base rows are pruned server-side).
+  const clrKey = rig ? `gs.clearedBefore.${rig}` : null
+  const clearedBefore = clrKey ? Number(localStorage.getItem(clrKey) || 0) : 0
+  const [busy, setBusy] = useState(false)
+  const epochOf = (d) => {
+    const c = d.created || d.created_ts
+    if (typeof c === 'number') return c
+    const t = Date.parse(c); return isNaN(t) ? 0 : t / 1000
+  }
+  const doClear = async () => {
+    if (!rig) return
+    setBusy(true)
+    const before = Date.now() / 1000
+    try {
+      await api.clearActions(rig, before)
+      if (clrKey) localStorage.setItem(clrKey, String(before))
+      refresh()
+    } catch (e) { /* surfaced by the empty list / next poll */ }
+    setBusy(false)
+  }
   let rows = data?.deployments || []
   // filter to the selected target: colony rows by rig, app rows by name-contains.
   if (targetName) {
     rows = rows.filter((d) => (d.authority === 'base' && d.rig === targetName)
       || (d.authority === 'app' && String(d.name || '').includes(targetName)))
+    // hide app rows the operator already cleared (server pruned the base rows).
+    if (clearedBefore) rows = rows.filter((d) => d.authority !== 'app' || epochOf(d) > clearedBefore)
   }
   rows = rows.slice(0, 50)
   return (
     <div className="pane min-h-0">
-      <div className="pane-head">Action History {targetName ? <span className="text-muted font-normal">: {targetName}</span> : ''}</div>
+      <div className="pane-head flex items-center">Action History {targetName ? <span className="text-muted font-normal">: {targetName}</span> : ''}
+        {rig && <button className="btn-ghost text-[11px] ml-auto" disabled={busy}
+                        title="prune finished base actions + hide app actions for this target"
+                        onClick={doClear}>{busy ? '…' : 'Clear'}</button>}</div>
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
@@ -416,7 +443,7 @@ export function Deployment() {
       <div className="flex-1 grid grid-cols-3 grid-rows-1 gap-2 min-h-0">
         <Targets sel={selTarget} setSel={setSelTarget} />
         <DistributionsColumn sel={selDist} setSel={setSelDist} />
-        <ActionHistory targetName={target?.name} />
+        <ActionHistory targetName={target?.name} targetRig={target?.attributes?.machine || target?.name} />
       </div>
       {showDeploy && selDist && <DeployDistDialog dist={selDist} devices={devices}
         onClose={() => setShowDeploy(false)}
