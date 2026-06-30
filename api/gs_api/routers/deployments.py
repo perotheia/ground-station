@@ -151,7 +151,32 @@ def deploy_base(req: BaseDeployRequest) -> dict:
     stats = (dep.get("statistics") or {}).get("status", {})
     ok = stats.get("success", 0) > 0 and stats.get("failure", 0) == 0
     mirrored = False
-    if req.mirror and ok:
+    if req.kind == "cleanup" and ok:
+        # the device was deprovisioned — drop the colony base-state tags so the
+        # Fleet UI stops showing a stale base_version. Keep the operator tags
+        # (name / local_ip / remote_ip / device_type); the PUT replaces ALL
+        # tags, so re-set the keepers. (artifact_name is device-reported
+        # inventory — it self-corrects to 'unprovisioned' on the device's next
+        # mender-update inventory submit; we can't clear it from here.)
+        try:
+            m = mender_client(s)
+            dev = _mender_device_for_rig(s, m, req.rig)
+            if dev:
+                # read the RAW tags (scope=tags); drop ONLY the base-state keys
+                # colony mirrored, keep every other operator tag verbatim
+                # (local_ip / remote_ip / name / device_type / group / ...).
+                drop = {"base_version", "base_authority", "base_kind",
+                        "base_deployed_at", "base_status"}
+                keep = {}
+                for a in dev.get("attributes", []) or []:
+                    if a.get("scope") != "tags" or a.get("name") in drop:
+                        continue
+                    v = a.get("value")
+                    keep[a["name"]] = v[0] if isinstance(v, list) and v else v
+                m.set_tags(dev["id"], keep)
+        except Exception:  # noqa: BLE001
+            pass            # tag-clear is best-effort; cleanup already ran
+    elif req.mirror and ok:
         mirrored = _mirror_base_state(s, req.rig, dep)
     return {"deployment": dep, "ok": ok, "mirrored": mirrored}
 
