@@ -88,7 +88,8 @@ def _flatten(dev: dict) -> dict:
 
 @router.get("")
 def list_devices(group: str | None = Query(default=None),
-                 status: str = Query(default="accepted")) -> dict:
+                 status: str = Query(default="accepted"),
+                 observe: bool = Query(default=False)) -> dict:
     """The fleet — sourced from deviceauth v2 (EVERY device + its auth status), so
     pending/preauthorized/rejected show too (Mender's single-list model). Accepted
     devices are enriched with their Mender inventory (fleet/base/app/health). The
@@ -136,6 +137,19 @@ def list_devices(group: str | None = Query(default=None),
     #    aren't in Mender inventory → they surface via /pending.) ────────────────
     # Observability cross-ref is BEST-EFFORT now (the list is devauth-sourced; a
     # cluster fault or a non-accepted device must not sink the fleet list).
+    # The observability cross-ref (com ListMachines, a live gRPC into the
+    # cluster) is SLOW + best-effort — only do it when the caller asks
+    # (observe=true). The default fast list returns Mender state immediately;
+    # the UI fetches observe lazily in the background. Non-observe accepted rows
+    # report connected=null (unknown until the lazy pass fills it in).
+    if not observe:
+        for d in devices:
+            if d.get("auth_status") and d["auth_status"] != "accepted":
+                d["connected"] = d["auth_status"]
+            else:
+                d["connected"] = None
+            d["base_source"] = None
+        return {"devices": devices, "observed": False}
     try:
         observed = _observed()
     except Exception:  # noqa: BLE001
@@ -645,12 +659,21 @@ def device_timeline(device_id: str) -> dict:
             rig = d.get("rig") or d.get("rig_id") or ""
             if dev_name and rig and (rig == dev_name or rig.startswith(str(dev_name))):
                 stats = d.get("statistics") or {}
+                # statistics is a counts dict {success,failure,pending,…}; a
+                # status STRING is what the UI renders, so summarize it.
+                st = stats.get("status")
+                if isinstance(st, dict):
+                    st = ", ".join(f"{k}={v}" for k, v in st.items() if v) or "queued"
+                elif not isinstance(st, str):
+                    st = d.get("status")
+                if isinstance(st, dict):
+                    st = ", ".join(f"{k}={v}" for k, v in st.items() if v) or "queued"
                 events.append({
                     "authority": "base", "kind": "deployment",
                     "title": f"{d.get('kind', 'orchestrate')} {d.get('runtime_version', '')}".strip(),
-                    "detail": stats.get("status") or d.get("status") or "?",
+                    "detail": st or "?",
                     "ts": d.get("created") or d.get("created_ts"),
-                    "status": stats.get("status") or d.get("status"),
+                    "status": st,
                     "id": d.get("id"),
                 })
     except Exception as e:  # noqa: BLE001

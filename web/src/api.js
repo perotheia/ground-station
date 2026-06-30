@@ -17,10 +17,11 @@ async function call(path, opts = {}) {
 export const api = {
   config: () => call('/config'),
   health: () => call('/health'),
-  devices: (group, status) => {
+  devices: (group, status, observe) => {
     const q = new URLSearchParams()
     if (group) q.set('group', group)
     if (status) q.set('status', status)
+    if (observe) q.set('observe', 'true')
     const s = q.toString()
     return call(`/devices${s ? `?${s}` : ''}`)
   },

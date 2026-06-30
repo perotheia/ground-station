@@ -16,6 +16,10 @@ const DOT = {
   'mender-only': ['#E57373', 'registered, no observability'],
   'com-only': ['#FFB300', 'observed, not enrolled'],
 }
+
+// Timeline event authority -> colour. base=colony (runtime base), app=Mender
+// (the SWP/app), state=ECU plane (UCM/SM). Drives the Timeline drawer dots.
+const AUTH_COLOR = { base: "#4CAF50", app: "#42A5F5", state: "#FFB300" }
 function Dot({ s }) {
   const [c, t] = DOT[s] || ['#90A4AE', s || 'unknown']
   return <span title={t} className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: c }} />
@@ -88,9 +92,9 @@ function Timeline({ device, onClose }) {
                   {e.authority}
                 </span>
                 <span className="text-sm text-slate-200">{e.title}</span>
-                {e.status && <span className="text-[11px] text-muted ml-auto">{e.status}</span>}
+                {e.status && <span className="text-[11px] text-muted ml-auto">{typeof e.status === "string" ? e.status : JSON.stringify(e.status)}</span>}
               </div>
-              {e.detail && <div className="text-[11px] text-muted">{e.detail}</div>}
+              {e.detail && <div className="text-[11px] text-muted">{typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail)}</div>}
               {e.ts && <div className="text-[10px] text-muted/70">{String(e.ts)}</div>}
             </li>
           ))}
@@ -266,7 +270,11 @@ function PreauthorizeDialog({ onClose, onDone }) {
 
 export function Fleet() {
   const [status, setStatus] = useState('accepted')
+  // Fast list (Mender state only — no live cluster gRPC). Loads instantly.
   const { data, loading, error, refresh } = usePoll(() => api.devices(null, status), [status], 6000)
+  // LAZY observability pass (com ListMachines — slow). Polled separately on a
+  // longer cadence so it never blocks the list; merged in below by id.
+  const { data: odata } = usePoll(() => api.devices(null, status, true), [status], 15000)
   const { data: gdata, refresh: grefresh } = usePoll(() => api.groups(), [], 30000)
   const [showConnect, setShowConnect] = useState(false)     // SSH-probe Create-Target modal
   const [showPreauth, setShowPreauth] = useState(false)
@@ -275,7 +283,13 @@ export function Fleet() {
   const [selected, setSelected] = useState(null)
   const [groupBy, setGroupBy] = useState('none')
   const [checked, setChecked] = useState({})                // id -> bool
-  const devices = data?.devices || []
+  const baseDevices = data?.devices || []
+  const obsById = Object.fromEntries((odata?.devices || []).map((d) => [d.id, d]))
+  // merge the lazy observability fields onto the fast list (by id).
+  const devices = baseDevices.map((d) => {
+    const o = obsById[d.id]
+    return o ? { ...d, connected: o.connected, base_source: o.base_source } : d
+  })
   const groups = gdata?.groups || []
   const reload = () => { refresh(); grefresh() }
   const checkedIds = Object.keys(checked).filter((k) => checked[k])
