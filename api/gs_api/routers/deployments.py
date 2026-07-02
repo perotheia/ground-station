@@ -552,16 +552,26 @@ def deploy_distribution(req: DistDeployRequest) -> dict:
         if role.get("abi") and m_abi and m_abi != role["abi"]:
             raise HTTPException(status_code=409,
                 detail=f"role {a.role} needs abi {role['abi']}, but {dev.get('name')} is {m_abi}")
-    # all valid → deploy per role
-    for a in req.assignments:
+    # all valid → deploy per role. The ORCHESTRATION role (master|zonal) is the
+    # runtime slice colony pulls from S3 — distinct from the Distribution role
+    # NAME. Model: exactly ONE master (the etcd/coordinator = assignment index 0),
+    # the rest zonal workers. machine_instance = the assignment index (master=0,
+    # workers=1,2,…) → the supervisor's per-board TIPC instance shift.
+    for _i, a in enumerate(req.assignments):
         role = roles[a.role]
         dev = devs[a.device_id]
         rig = (dev.get("attributes", {}) or {}).get("machine") or dev.get("name")
         ip = a.ip or dev.get("reachable_ip")
-        step = {"role": a.role, "device": a.device_id, "rig": rig}
-        # 1) base: the role's runtime_build via colony
+        orch_role = "master" if _i == 0 else "zonal"
+        step = {"role": a.role, "orch_role": orch_role, "device": a.device_id,
+                "rig": rig}
+        # 1) base: the role's runtime_build via colony (registry-free: host from
+        #    Mender, role picks the S3 manifest slice, machine_instance = index).
         try:
-            dep = colony_client(s).create(rig, "orchestrate", host=ip)
+            dep = colony_client(s).create(
+                rig, "orchestrate", host=ip,
+                extra={"role": orch_role, "machine_instance": _i,
+                       "runtime_version": role["runtime_build"]})
             if ip:
                 try: m.set_tags(a.device_id, {"local_ip": ip, "base_version": role["runtime_build"]})
                 except Exception: pass  # noqa: BLE001
