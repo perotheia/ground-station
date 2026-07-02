@@ -31,6 +31,7 @@ class Settings:
     s3_swp_bucket: str = os.environ.get("S3_SWP_BUCKET", "theia-swp")
     s3_roles_bucket: str = os.environ.get("S3_ROLES_BUCKET", "theia-roles")
     s3_distributions_bucket: str = os.environ.get("S3_DISTRIBUTIONS_BUCKET", "theia-distributions")
+    s3_rollouts_bucket: str = os.environ.get("S3_ROLLOUTS_BUCKET", "theia-rollouts")
 
     # ---- colony-api (the BASE deployment authority) ----
     # gs-api fans /api/deployments out to BOTH Mender (app) and colony-api (base).

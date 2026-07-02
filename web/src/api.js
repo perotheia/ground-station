@@ -50,11 +50,19 @@ export const api = {
   // rollout — both planes for one deployment (Mender transport + UCM/SM ECU)
   rollout: (depId) => call(`/deployments/${depId}/rollout`),
   abort: (depId) => call(`/deployments/${depId}/abort`, { method: 'POST' }),
-  // ── Phased rollouts (P6): split a group into N sequential sub-groups ───────
+  // ── Phased rollouts (P6): a NAMED, STATEFUL entity on S3 (theia-rollouts) ──
+  // create persists the plan; advance/abort/get key on the NAME (state lives on
+  // the server, not the client — survives a GS reload).
   createRollout: (body) =>
     call('/deployments/rollouts', { method: 'POST', body: JSON.stringify(body) }),
-  advanceRollout: (artifact_name, name, devices) =>
-    call('/deployments/rollouts/advance', { method: 'POST', body: JSON.stringify({ artifact_name, name, devices }) }),
+  listRollouts: () => call('/deployments/rollouts'),
+  getRollout: (name) => call(`/deployments/rollouts/${encodeURIComponent(name)}`),
+  advanceRollout: (name) =>
+    call('/deployments/rollouts/advance', { method: 'POST', body: JSON.stringify({ name }) }),
+  abortRollout: (name) =>
+    call(`/deployments/rollouts/${encodeURIComponent(name)}/abort`, { method: 'POST' }),
+  deleteRollout: (name) =>
+    call(`/deployments/rollouts/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   // per-device ECU lifecycle
   ucmProgress: (deviceId) => call(`/ucm/${deviceId}/progress`),
 

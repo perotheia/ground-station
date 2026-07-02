@@ -97,6 +97,7 @@ class PlaneClient:
         self._swp = s.s3_swp_bucket
         self._roles = s.s3_roles_bucket
         self._dists = s.s3_distributions_bucket
+        self._rollouts = s.s3_rollouts_bucket
 
     def _indexes(self, bucket: str) -> list[dict]:
         out: list[dict] = []
@@ -151,6 +152,52 @@ class PlaneClient:
                 for o in page.get("Contents", [])]
         for k in keys:
             self._s3.delete_object(Bucket=self._dists, Key=k)
+        return len(keys)
+
+    # -- Rollouts: a STATEFUL, NAMED entity (survives reload; server-observable).
+    #    Unlike a Distribution (name+version bundle), a rollout is a phased UPGRADE
+    #    of an app group: s3://theia-rollouts/<name>/index.json holds the whole plan
+    #    + live status. advance/abort key on the NAME (re-read the plan from S3).
+    def rollouts_catalog(self) -> list[dict]:
+        """Every rollout: index.json under theia-rollouts/<name>/.
+        {name, app, from_version, to_version, direction, target, phases[], status}."""
+        return [i for i in self._indexes(self._rollouts)
+                if i.get("plane") == "rollout" or "phases" in i or "_error" in i]
+
+    def fetch_rollout(self, name: str) -> dict | None:
+        """The single rollout entity by name (None if absent)."""
+        if not name:
+            return None
+        try:
+            body = self._s3.get_object(Bucket=self._rollouts,
+                                       Key=f"{name}/index.json")["Body"].read()
+            d = json.loads(body)
+            d["_key"] = f"{name}/index.json"
+            return d
+        except Exception:  # noqa: BLE001 -- absent / malformed -> not found
+            return None
+
+    def save_rollout(self, name: str, doc: dict) -> str:
+        """Write/overwrite the rollout entity. `doc` carries the full plan +
+        status; advance/abort re-save the same key with an updated status."""
+        if not name:
+            raise ValueError("save_rollout: name required")
+        key = f"{name}/index.json"
+        body = json.dumps({"plane": "rollout", "name": name, **doc}).encode()
+        self._s3.put_object(Bucket=self._rollouts, Key=key, Body=body,
+                            ContentType="application/json")
+        return key
+
+    def delete_rollout(self, name: str) -> int:
+        """Delete every object under the rollout's prefix. Returns the count."""
+        if not name:
+            raise ValueError("delete_rollout: name required")
+        pfx = f"{name}/"
+        paginator = self._s3.get_paginator("list_objects_v2")
+        keys = [o["Key"] for page in paginator.paginate(Bucket=self._rollouts, Prefix=pfx)
+                for o in page.get("Contents", [])]
+        for k in keys:
+            self._s3.delete_object(Bucket=self._rollouts, Key=k)
         return len(keys)
 
     def roles_catalog(self) -> list[dict]:

@@ -69,6 +69,22 @@ def list_deployments() -> dict:
     return out
 
 
+@router.get("/rollouts")
+def list_rollouts() -> dict:
+    """Every named rollout entity on the package plane (theia-rollouts), newest
+    first is not tracked (no timestamps) — returned in bucket order."""
+    return {"plane": "rollouts", "rollouts": plane_client(settings()).rollouts_catalog()}
+
+
+@router.get("/rollouts/{name}")
+def get_rollout(name: str) -> dict:
+    """A single named rollout entity (the live plan + status)."""
+    doc = plane_client(settings()).fetch_rollout(name)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"no rollout '{name}'")
+    return doc
+
+
 @router.get("/{dep_id}")
 def deployment(dep_id: str) -> dict:
     s = settings()
@@ -281,14 +297,57 @@ def create_deployment(req: DeployRequest) -> dict:
         raise HTTPException(status_code=502, detail=f"create deployment: {e}")
 
 
-# ── Phased rollouts (P6): split a group into N sequential sub-groups ───────────
+# ── Phased rollouts (P6): a STATEFUL, NAMED entity on S3 (theia-rollouts) ───────
+# A rollout is a phased UPGRADE (or downgrade) of an APP group from its installed
+# SWP version to a new one. It is a named artifact — s3://theia-rollouts/<name>/
+# index.json — so it survives a GS reload, is server-observable, and advance/abort
+# key on the NAME (re-read the plan from S3). Rollouts are APP-PLANE ONLY: they
+# reference an app SWP artifact (authority="app"); the base/runtime plane is
+# re-provisioned by colony, never rolled.
+def _semver_tuple(v: str) -> tuple:
+    """<ver>[-<abi>] → numeric semver tuple (abi stripped). Non-numeric → (0,)."""
+    core = (v or "").split("-", 1)[0]
+    try:
+        return tuple(int(x) for x in core.split("."))
+    except ValueError:
+        return (0,)
+
+
+def _direction(frm: str, to: str) -> str:
+    """upgrade | downgrade | same, from comparing the two SWP semvers."""
+    a, b = _semver_tuple(frm), _semver_tuple(to)
+    if b > a:
+        return "upgrade"
+    if b < a:
+        return "downgrade"
+    return "same"
+
+
+def _swp_entry(s, app: str, version: str) -> dict | None:
+    """The published SWP catalog row for <app>-<version> (abi-tolerant match), or
+    None. Used to (a) prove the target is an APP artifact and (b) read its abi."""
+    want = _semver_tuple(version)
+    for row in plane_client(s).swp_catalog():
+        if row.get("_error"):
+            continue
+        if row.get("app") != app:
+            continue
+        if _semver_tuple(row.get("version", "")) == want:
+            return row
+    return None
+
+
 class RolloutRequest(BaseModel):
-    artifact_name: str
+    name: str                              # the rollout's IDENTITY (S3 key)
+    app: str                               # the app SWP being rolled (app plane)
+    to_version: str                        # the SWP version to roll the group TO
+    from_version: str | None = None        # the installed version (for direction)
+    artifact_name: str | None = None       # Mender artifact; default <app>-<to>
     group: str | None = None
     fleet: str | None = None
-    name: str | None = None
-    phases: int = 2                 # split the target into N sequential sub-groups
-    when: str = "now"              # "now" | "scheduled" (scheduled = create paused)
+    direction: str | None = None           # auto (upgrade|downgrade) if omitted
+    phases: int = 2                        # split the target into N sub-groups
+    when: str = "now"                     # "now" | "scheduled" (create paused)
 
 
 def _rollout_targets(m, req) -> list[str]:
@@ -312,35 +371,62 @@ def _chunk(seq: list, n: int) -> list[list]:
 
 @router.post("/rollouts", dependencies=[Depends(require_key)])
 def create_rollout(req: RolloutRequest) -> dict:
-    """A PHASED rollout (UF Rollout, trimmed for a lab fleet): split the target
-    group/fleet into N sequential sub-groups, deploy phase 1 NOW, and return the
-    phase plan. Subsequent phases launch via POST /rollouts/{...}/advance — the
-    operator gates progression (no percent thresholds / auto-halt; design §P6).
-    `when=scheduled` builds the plan WITHOUT launching phase 1 (operator advances)."""
+    """Create a NAMED, STATEFUL rollout (UF Rollout, trimmed for a lab fleet):
+    split the target group/fleet into N sequential sub-groups, deploy phase 1 NOW,
+    and PERSIST the whole plan + status to s3://theia-rollouts/<name>/index.json.
+    Subsequent phases launch via POST /rollouts/advance keyed on the name (the plan
+    is re-read from S3 — it survives a GS reload). The operator gates progression
+    (no percent thresholds / auto-halt; design §P6). `when=scheduled` builds the
+    entity WITHOUT launching phase 1. APP PLANE ONLY — the target must be a
+    published app SWP (authority="app"); base/runtime is re-provisioned, not rolled."""
     s = settings()
     m = mender_client(s)
     target = req.fleet or req.group
     if not target:
         raise HTTPException(status_code=400, detail="need a fleet or group to target")
+    if not req.name:
+        raise HTTPException(status_code=400, detail="a rollout needs a name")
+    # Enforce app-plane: the target version must be a published app SWP. This is
+    # what makes a rollout an APP upgrade/downgrade and never a base/runtime roll.
+    swp = _swp_entry(s, req.app, req.to_version)
+    if not swp:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"no published app SWP {req.app}-{req.to_version} on the "
+                    "package plane — rollouts target apps only (release it first)"))
+    if plane_client(s).fetch_rollout(req.name):
+        raise HTTPException(status_code=409,
+                            detail=f"rollout '{req.name}' already exists")
+    artifact_name = req.artifact_name or f"{req.app}-{req.to_version}"
+    direction = req.direction or _direction(req.from_version or "", req.to_version)
     try:
         devices = _rollout_targets(m, req)
         if not devices:
             raise HTTPException(status_code=400,
                                 detail=f"no devices match '{target}'")
         chunks = _chunk(devices, req.phases)
-        base = req.name or f"theia-{req.artifact_name}-{target}"
         plan = [{"phase": i + 1, "devices": c, "count": len(c),
-                 "name": f"{base}-p{i + 1}", "deployment_id": None, "status": "queued"}
+                 "name": f"{req.name}-p{i + 1}", "deployment_id": None,
+                 "status": "queued"}
                 for i, c in enumerate(chunks)]
         launched = None
         if req.when != "scheduled" and plan:
             plan[0]["deployment_id"] = m.create_deployment(
-                plan[0]["name"], req.artifact_name, plan[0]["devices"])
+                plan[0]["name"], artifact_name, plan[0]["devices"])
             plan[0]["status"] = "deploying"
             launched = plan[0]["deployment_id"]
-        return {"artifact_name": req.artifact_name, "target": target,
-                "phases": len(plan), "total_devices": len(devices),
-                "plan": plan, "launched": launched}
+        status = "in_progress" if launched else "scheduled"
+        doc = {"app": req.app, "authority": "app",
+               "from_version": req.from_version or "",
+               "to_version": req.to_version, "direction": direction,
+               "artifact_name": artifact_name,
+               "target": {"group": req.group, "fleet": req.fleet},
+               "abi": swp.get("abi", ""),
+               "phases": plan, "total_devices": len(devices),
+               "status": status, "current_phase": 1 if launched else 0}
+        # Persist the entity — advance/abort re-read + re-save this same key.
+        plane_client(s).save_rollout(req.name, doc)
+        return {"name": req.name, **doc, "launched": launched}
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -348,26 +434,78 @@ def create_rollout(req: RolloutRequest) -> dict:
 
 
 class AdvanceRequest(BaseModel):
-    artifact_name: str
-    name: str                       # the next phase's deployment name
-    devices: list[str]
+    name: str                       # the rollout's name (S3 key) — the state lives there
 
 
 @router.post("/rollouts/advance", dependencies=[Depends(require_key)])
 def advance_rollout(req: AdvanceRequest) -> dict:
-    """Launch the NEXT phase of a rollout (the operator-gated step). The client
-    holds the phase plan (from create_rollout) and posts the next phase's device
-    list; we create that phase's Mender deployment. Stateless on the server —
-    matches the GS principle (no rollout state DB; the plan lives in the UI)."""
+    """Launch the NEXT phase of a NAMED rollout — the operator-gated step. The
+    plan lives in S3 (not the client): we re-read s3://theia-rollouts/<name>/, find
+    the first phase still `queued`, create its Mender deployment, mark it
+    `deploying`, and re-save. When the last phase launches the rollout status
+    becomes `completed`. Idempotent-ish: a rollout with no queued phase 400s."""
     s = settings()
     m = mender_client(s)
-    if not req.devices:
+    pc = plane_client(s)
+    doc = pc.fetch_rollout(req.name)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"no rollout '{req.name}'")
+    if doc.get("status") == "aborted":
+        raise HTTPException(status_code=409, detail="rollout is aborted")
+    phases = doc.get("phases", [])
+    nxt = next((p for p in phases if p.get("status") == "queued"), None)
+    if not nxt:
+        raise HTTPException(status_code=400, detail="no queued phase to advance")
+    if not nxt.get("devices"):
         raise HTTPException(status_code=400, detail="phase has no devices")
     try:
-        dep_id = m.create_deployment(req.name, req.artifact_name, req.devices)
-        return {"deployment_id": dep_id, "name": req.name, "count": len(req.devices)}
+        dep_id = m.create_deployment(nxt["name"], doc["artifact_name"], nxt["devices"])
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"advance rollout: {e}")
+    nxt["deployment_id"] = dep_id
+    nxt["status"] = "deploying"
+    doc["current_phase"] = nxt["phase"]
+    remaining = [p for p in phases if p.get("status") == "queued"]
+    doc["status"] = "completed" if not remaining else "in_progress"
+    pc.save_rollout(req.name, doc)
+    return {"name": req.name, "deployment_id": dep_id, "phase": nxt["phase"],
+            "count": len(nxt["devices"]), "status": doc["status"]}
+
+
+@router.post("/rollouts/{name}/abort", dependencies=[Depends(require_key)])
+def abort_rollout(name: str) -> dict:
+    """Abort a NAMED rollout: abort every phase that has an in-flight Mender
+    deployment, mark the entity `aborted`, and re-save. Queued phases just stop."""
+    s = settings()
+    m = mender_client(s)
+    pc = plane_client(s)
+    doc = pc.fetch_rollout(name)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"no rollout '{name}'")
+    aborted = []
+    for p in doc.get("phases", []):
+        did = p.get("deployment_id")
+        if did and p.get("status") in ("deploying", "queued"):
+            try:
+                m.abort_deployment(did)
+                aborted.append(did)
+            except Exception:  # noqa: BLE001 — best-effort; already-finished 4xxs
+                pass
+        if p.get("status") in ("queued", "deploying"):
+            p["status"] = "aborted"
+    doc["status"] = "aborted"
+    pc.save_rollout(name, doc)
+    return {"name": name, "aborted_deployments": aborted, "status": "aborted"}
+
+
+@router.delete("/rollouts/{name}", dependencies=[Depends(require_key)])
+def delete_rollout(name: str) -> dict:
+    """Delete a rollout entity from S3 (does NOT touch already-launched Mender
+    deployments — abort those first if in-flight)."""
+    n = plane_client(settings()).delete_rollout(name)
+    if not n:
+        raise HTTPException(status_code=404, detail=f"no rollout '{name}'")
+    return {"name": name, "deleted": n}
 
 
 @router.post("/{dep_id}/abort", dependencies=[Depends(require_key)])
