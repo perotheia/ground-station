@@ -13,25 +13,31 @@ const abiOf = (key) => ABIS.find((x) => (key || '').includes(x)) || ''
 
 function NewDistDialog({ apps, runtimes, swpBuilds, onClose, onDone }) {
   const [name, setName] = useState('')
-  const [version, setVersion] = useState('1.0')
   const [appSel, setAppSel] = useState('')        // "fleet/app/version"
-  const [roleAbi, setRoleAbi] = useState({})      // roleName -> chosen abi
   const [roleRt, setRoleRt] = useState({})        // roleName -> runtime_build key
-  const [roleApp, setRoleApp] = useState({})      // roleName -> app_build key
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(null)
 
   const app = apps.find((a) => `${a.fleet}/${a.app}/${a.version}` === appSel)
   const roles = app?.roles?.length ? app.roles : (app ? ['default'] : [])
+  // The Distribution INHERITS the app's version + abi. The SWP build key IS the
+  // base app for EVERY role (a per-role app is an oxymoron — one base app defines
+  // the distribution). abi is encoded in the runtime/app label (…-amd64), so no
+  // separate ABI selector; the runtime list is filtered to the app's abi.
+  const abi = app ? abiOf(`${app.app}-${app.version}`) : ''
+  const swpBuild = app ? `${app.app}-${app.version}` : ''
+  const version = app?.version || ''               // inherited, not entered
+  const rtOptions = runtimes.filter((k) => !abi || abiOf(k) === abi)
 
   const save = async () => {
     if (!name.trim() || !app) { setErr('name + a Software Package required'); return }
     const rolesPayload = roles.map((r) => ({
-      role: r, abi: roleAbi[r] || '',
-      runtime_build: roleRt[r] || '', swp_build: roleApp[r] || '', app_build: roleApp[r] || '',
+      role: r, abi,
+      runtime_build: roleRt[r] || '',
+      swp_build: swpBuild, app_build: swpBuild,     // the ONE base app for every role
     }))
     if (rolesPayload.some((r) => !r.runtime_build)) { setErr('pick a runtime build for every role'); return }
     setBusy(true); setErr(null)
-    try { await api.createDistribution({ name: name.trim(), version: version.trim(), roles: rolesPayload }); onDone() }
+    try { await api.createDistribution({ name: name.trim(), version, roles: rolesPayload }); onDone() }
     catch (e) { setErr(e.message) }
     setBusy(false)
   }
@@ -42,12 +48,12 @@ function NewDistDialog({ apps, runtimes, swpBuilds, onClose, onDone }) {
           <h3 className="font-medium flex-1" style={{ color: '#4A90E2' }}>Prepare a Distribution</h3>
           <button className="text-slate-400 hover:text-slate-200" onClick={onClose}>✕</button>
         </div>
-        <div className="flex gap-2 mb-3">
+        <div className="flex gap-2 mb-3 items-center">
           <input className="input flex-1 text-sm" placeholder="distribution name (e.g. vehicle)" value={name} onChange={(e) => setName(e.target.value)} />
-          <input className="input w-24 text-sm" placeholder="version" value={version} onChange={(e) => setVersion(e.target.value)} />
+          {app && <span className="text-xs text-muted whitespace-nowrap">v{version} · {abi || 'any'}</span>}
         </div>
-        <label className="block text-xs text-muted mb-1">Software Package (defines arity + roles)</label>
-        <select className="input w-full text-sm mb-3" value={appSel} onChange={(e) => setAppSel(e.target.value)}>
+        <label className="block text-xs text-muted mb-1">Software Package (defines arity, roles, version + abi)</label>
+        <select className="input w-full text-sm mb-3" value={appSel} onChange={(e) => { setAppSel(e.target.value); setRoleRt({}) }}>
           <option value="">— pick a Software Package —</option>
           {apps.map((a) => <option key={`${a.fleet}/${a.app}/${a.version}`} value={`${a.fleet}/${a.app}/${a.version}`}>
             {a.app} {a.version} /{a.arity || (a.roles?.length || 1)} [{(a.roles || []).join(', ') || 'single'}]
@@ -55,41 +61,18 @@ function NewDistDialog({ apps, runtimes, swpBuilds, onClose, onDone }) {
         </select>
         {app && (
           <div className="space-y-3">
-            <div className="text-xs text-muted">Per-role builds (arity {app.arity || roles.length}):</div>
-            {roles.map((r) => {
-              const abi = roleAbi[r] || ''
-              const rts = runtimes.filter((k) => !abi || abiOf(k) === abi)
-              const aps = swpBuilds.filter((k) => !abi || abiOf(k) === abi)
-              return (
-                <div key={r} className="rounded border border-edge bg-ink/40 p-2 space-y-2">
-                  <div className="text-sm font-semibold text-slate-200">role: {r}</div>
-                  <div className="flex gap-2 items-center text-xs">
-                    <span className="w-16 text-right text-muted">ABI</span>
-                    <select className="input flex-1 text-xs" value={abi}
-                            onChange={(e) => setRoleAbi({ ...roleAbi, [r]: e.target.value })}>
-                      <option value="">(any)</option>
-                      {ABIS.map((x) => <option key={x} value={x}>{x}</option>)}
-                    </select>
-                  </div>
-                  <div className="flex gap-2 items-center text-xs">
-                    <span className="w-16 text-right text-muted">runtime</span>
-                    <select className="input flex-1 text-xs font-mono" value={roleRt[r] || ''}
-                            onChange={(e) => setRoleRt({ ...roleRt, [r]: e.target.value })}>
-                      <option value="">— runtime build —</option>
-                      {rts.map((k) => <option key={k} value={k}>{k}</option>)}
-                    </select>
-                  </div>
-                  <div className="flex gap-2 items-center text-xs">
-                    <span className="w-16 text-right text-muted">app</span>
-                    <select className="input flex-1 text-xs font-mono" value={roleApp[r] || ''}
-                            onChange={(e) => setRoleApp({ ...roleApp, [r]: e.target.value })}>
-                      <option value="">(base only)</option>
-                      {aps.map((k) => <option key={k} value={k}>{k}</option>)}
-                    </select>
-                  </div>
-                </div>
-              )
-            })}
+            <div className="text-xs text-muted">Per-role runtime (arity {app.arity || roles.length}) — the base app <span className="font-mono text-slate-300">{swpBuild}</span> deploys to every role:</div>
+            {roles.map((r) => (
+              <div key={r} className="rounded border border-edge bg-ink/40 p-2 flex gap-2 items-center text-xs">
+                <span className="w-20 text-sm font-semibold text-slate-200">role: {r}</span>
+                <span className="text-muted">runtime</span>
+                <select className="input flex-1 text-xs font-mono" value={roleRt[r] || ''}
+                        onChange={(e) => setRoleRt({ ...roleRt, [r]: e.target.value })}>
+                  <option value="">— runtime build —</option>
+                  {rtOptions.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </div>
+            ))}
           </div>
         )}
         {err && <div className="text-xs text-red-400 mt-2">{err}</div>}

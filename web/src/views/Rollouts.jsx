@@ -26,6 +26,18 @@ function bar(stats) {
 }
 
 // New Rollout dialog — pick an APP artifact + group + phase count + Now/Scheduled.
+// abi encoded in an artifact/runtime label (bookworm-arm64, amd64, ...).
+const ABIS = ['bookworm-arm64', 'focal-arm64', 'ubuntu24', 'amd64']
+const abiOf = (key) => ABIS.find((x) => (key || '').includes(x)) || ''
+// derive a device's abi from its Mender inventory (matches Deployment._devAbi).
+function _devAbi(d) {
+  const os = (d.attributes?.os || '').toLowerCase(), k = (d.attributes?.kernel || '').toLowerCase()
+  const arch = /aarch64|arm64/.test(k + os) ? 'arm64' : /x86_64|amd64/.test(k) ? 'amd64' : ''
+  const distro = /focal|20\.04/.test(os) ? 'focal' : /bookworm|trixie|debian gnu\/linux 1[23]/.test(os) ? 'bookworm'
+    : /ubuntu.*24/.test(os) ? 'ubuntu24' : ''
+  return [distro, arch].filter(Boolean).join('-')
+}
+
 function NewRolloutDialog({ onClose, onCreated }) {
   const { data: appData } = usePoll(() => api.appsPlane(), [], 60000)
   const { data: gdata } = usePoll(() => api.groups(), [], 60000)
@@ -41,6 +53,15 @@ function NewRolloutDialog({ onClose, onCreated }) {
 
   const [artifact, setArtifact] = useState('')
   const [group, setGroup] = useState('')
+  // The selected group's devices -> their abi set -> show only COMPATIBLE apps.
+  // "compatible with the group": an artifact's abi (from its name) is one an
+  // accepted device in the group actually runs. No group picked -> show all.
+  const { data: gdevs } = usePoll(() => group ? api.devices(group, 'accepted') : Promise.resolve({ devices: [] }), [group], 30000)
+  const groupAbis = useMemo(() => new Set((gdevs?.devices || []).map(_devAbi).filter(Boolean)), [gdevs])
+  const compatArtifacts = useMemo(() => {
+    if (!group || groupAbis.size === 0) return artifacts
+    return artifacts.filter((a) => { const ab = abiOf(a); return !ab || groupAbis.has(ab) })
+  }, [artifacts, group, groupAbis])
   const [phases, setPhases] = useState(2)
   const [when, setWhen] = useState('now')
   const [busy, setBusy] = useState(false)
@@ -65,10 +86,11 @@ function NewRolloutDialog({ onClose, onCreated }) {
         <label className="block text-xs text-muted mb-1">Release (app artifact)</label>
         <select className="input w-full mb-3" value={artifact} onChange={(e) => setArtifact(e.target.value)}>
           <option value="">— pick —</option>
-          {artifacts.map((a) => <option key={a} value={a}>{a}</option>)}
+          {compatArtifacts.map((a) => <option key={a} value={a}>{a}</option>)}
+          {group && compatArtifacts.length === 0 && <option value="" disabled>-- no app matches this group's abi --</option>}
         </select>
         <label className="block text-xs text-muted mb-1">Group</label>
-        <select className="input w-full mb-3" value={group} onChange={(e) => setGroup(e.target.value)}>
+        <select className="input w-full mb-3" value={group} onChange={(e) => { setGroup(e.target.value); setArtifact('') }}>
           <option value="">— pick —</option>
           {groups.map((g) => <option key={g.name} value={g.name}>{g.name} ({g.count})</option>)}
         </select>
