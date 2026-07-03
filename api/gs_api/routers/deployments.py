@@ -337,6 +337,18 @@ def _swp_entry(s, app: str, version: str) -> dict | None:
     return None
 
 
+def _device_base_version(m, device_id: str) -> str | None:
+    """A device's installed base runtime — the colony base-state mirror tag
+    `base_version` (the runtime-compat key). Mirrors planes.py._device_base_version."""
+    for d in m.devices():
+        if d.get("id") == device_id:
+            for a in d.get("attributes", []) or []:
+                if a.get("name") == "base_version":
+                    v = a.get("value")
+                    return v[0] if isinstance(v, list) and v else v
+    return None
+
+
 class RolloutRequest(BaseModel):
     name: str                              # the rollout's IDENTITY (S3 key)
     app: str                               # the app SWP being rolled (app plane)
@@ -404,6 +416,26 @@ def create_rollout(req: RolloutRequest) -> dict:
         if not devices:
             raise HTTPException(status_code=400,
                                 detail=f"no devices match '{target}'")
+        # ── runtime-compat gate (no backward compat) ─────────────────────────
+        # A rollout swaps the APP plane on a FIXED runtime. An app deploys ONLY
+        # onto a device whose installed base_version == the app SWP's
+        # requires_runtime; a mismatch means "update the base (colony) first". A
+        # MAJOR SWP (major=true / migration set) is ALWAYS pinned, so this gate is
+        # what enforces the migration's runtime dependency.
+        need = (swp.get("requires_runtime") or "").strip()
+        blocked = []
+        if need:
+            inv = {did: _device_base_version(m, did) for did in devices}
+            ok_devices = [did for did in devices if inv.get(did) == need]
+            blocked = [{"device": did, "base_version": inv.get(did)}
+                       for did in devices if inv.get(did) != need]
+            devices = ok_devices
+        if not devices:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"runtime-incompatible: {req.app} {req.to_version} needs "
+                        f"base '{need}', but no targeted device runs it. Update the "
+                        f"base (colony) first. Blocked: {blocked}"))
         chunks = _chunk(devices, req.phases)
         plan = [{"phase": i + 1, "devices": c, "count": len(c),
                  "name": f"{req.name}-p{i + 1}", "deployment_id": None,
@@ -422,6 +454,10 @@ def create_rollout(req: RolloutRequest) -> dict:
                "artifact_name": artifact_name,
                "target": {"group": req.group, "fleet": req.fleet},
                "abi": swp.get("abi", ""),
+               "requires_runtime": need,
+               "migration": swp.get("migration", ""),
+               "major": bool(swp.get("major", False)),
+               "blocked": blocked,
                "phases": plan, "total_devices": len(devices),
                "status": status, "current_phase": 1 if launched else 0}
         # Persist the entity — advance/abort re-read + re-save this same key.
