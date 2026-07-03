@@ -76,12 +76,55 @@ def list_rollouts() -> dict:
     return {"plane": "rollouts", "rollouts": plane_client(settings()).rollouts_catalog()}
 
 
+def _rollout_sw_compare(s, doc: dict) -> list[dict]:
+    """Per-machine SW patch-compare for a rollout: read each board's installed
+    current_version from per/etcd (via com PerView on the target's aggregator) and
+    diff it against the rollout's to_version. Returns [{machine, current, target,
+    at_target, campaign}] — which boards are already at the rollout's version and
+    which are behind. Best-effort: an unreachable com yields []."""
+    m = mender_client(s)
+    tgt = doc.get("target", {}) or {}
+    group, fleet = tgt.get("group"), tgt.get("fleet")
+    devices = (resolve_fleet(m, fleet) if fleet
+               else (m.device_ids_in_group(group) if group else []))
+    # com on ANY target board aggregates the whole cluster's SW state — pick the
+    # first reachable endpoint.
+    by_id = {d.get("id"): d for d in m.devices()}
+    endpoint = None
+    for did in devices:
+        endpoint = _com_endpoint(by_id.get(did))
+        if endpoint:
+            break
+    if not endpoint:
+        return []
+    to_version = str(doc.get("to_version", ""))
+    try:
+        rows = com_client.sw_state(endpoint, timeout=6.0)
+    except Exception:  # noqa: BLE001 — com not reachable
+        return []
+    out = []
+    for r in rows:
+        cur = r.get("current_version", "")
+        out.append({"machine": r.get("machine", ""), "current": cur,
+                    "target": to_version,
+                    "at_target": bool(cur) and cur == to_version,
+                    "in_flight_target": r.get("target_version", ""),
+                    "campaign": r.get("campaign_id", ""),
+                    "state": r.get("state_name", "")})
+    return out
+
+
 @router.get("/rollouts/{name}")
 def get_rollout(name: str) -> dict:
-    """A single named rollout entity (the live plan + status)."""
-    doc = plane_client(settings()).fetch_rollout(name)
+    """A single named rollout entity (the live plan + status), plus a per-machine
+    SW patch-compare (`sw`): each targeted board's installed current_version vs the
+    rollout's to_version, so the operator sees which boards are already at target
+    and which are behind. Best-effort — `sw` is [] when com is unreachable."""
+    s = settings()
+    doc = plane_client(s).fetch_rollout(name)
     if not doc:
         raise HTTPException(status_code=404, detail=f"no rollout '{name}'")
+    doc["sw"] = _rollout_sw_compare(s, doc)
     return doc
 
 

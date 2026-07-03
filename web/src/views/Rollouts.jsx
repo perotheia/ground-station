@@ -238,6 +238,29 @@ function PhasePlan({ rollout, onClose }) {
           </div>
         ))}
       </div>
+
+      {/* SW patch-compare: each targeted board's installed version vs the
+          rollout's to_version — which are at target (green) vs behind (amber). */}
+      {(doc.sw || []).length > 0 && (
+        <div className="mb-2">
+          <div className="text-xs text-muted mb-1">SW per machine (installed → target {doc.to_version})</div>
+          <div className="flex flex-col gap-0.5">
+            {doc.sw.map((r) => (
+              <div key={r.machine} className="flex items-center gap-2 text-xs">
+                <span className="font-medium w-24">{r.machine}</span>
+                <span className="text-muted">{r.current || '—'}</span>
+                <span className="mx-1">→</span>
+                <span>{r.target || '—'}</span>
+                <span className={`badge ${r.at_target
+                  ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                  {r.at_target ? 'at target' : 'behind'}
+                </span>
+                {r.state && <span className="text-muted">{r.state}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {err && <div className="text-xs text-red-400 mb-1">{err}</div>}
       <div className="flex gap-2">
         {next && doc.status !== 'aborted'

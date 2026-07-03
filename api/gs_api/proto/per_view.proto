@@ -1,0 +1,37 @@
+// Minimal slice of theia's services/com/proto/supervisor_bridge.proto (PerView) +
+// system_services_ucm.UcmSwState — JUST enough for GS to read the per-machine SW
+// state a Rollout compares against its to_version. Wire tags MUST match the full
+// protos on com :7700; proto3 forward-compat skips the fields we omit.
+syntax = "proto3";
+
+package services.com;
+
+message GetSnapshotCall {
+  string config_type = 1;   // "" = ALL rows; else just that type's row
+}
+
+message PerStoreRow {
+  string config_type = 1;   // the etcd key suffix (target_node) — e.g. "compute/SW"
+  string digest      = 2;
+  bytes  config      = 3;   // serialized <Node>Config — a UcmSwState for a */SW row
+}
+
+message PerStoreSnapshot {
+  repeated PerStoreRow rows = 1;
+}
+
+// The per-machine SW state UCM writes to /theia/config/<machine>/SW. Tags match
+// system_services_ucm.UcmSwState in theia's ucm.proto.
+message UcmSwState {
+  string machine         = 1;
+  string current_version = 2;
+  string target_version  = 3;
+  string campaign_id     = 4;
+  uint32 state           = 5;   // UcmState ordinal (see com_client.UCM_STATE)
+  uint64 updated_ns      = 6;
+}
+
+// Only the GetSnapshot RPC (the store read). com hosts the full PerView on :7700.
+service PerView {
+  rpc GetSnapshot (GetSnapshotCall) returns (PerStoreSnapshot);
+}

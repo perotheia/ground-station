@@ -18,9 +18,11 @@ from pathlib import Path
 
 _PROTO = Path(__file__).resolve().parent / "proto" / "ucm_view.proto"
 _SV_PROTO = Path(__file__).resolve().parent / "proto" / "supervisor_view.proto"
+_PV_PROTO = Path(__file__).resolve().parent / "proto" / "per_view.proto"
 _pb = None
 _pbg = None
 _svpb = None
+_pvpb, _pvpbg = None, None
 _svpbg = None
 
 
@@ -86,6 +88,61 @@ def list_machines(target: str, timeout: float = 6.0) -> list[dict]:
                                      if m.HasField("info") else "") or "",
                  "machine_name": (m.info.machine_name if m.HasField("info") else "") or ""}
                 for m in rep.machines]
+
+
+
+def _ensure_pv_stubs():
+    """Compile per_view.proto → the PerView.GetSnapshot stub (the SW-state read)."""
+    global _pvpb, _pvpbg
+    if _pvpb is not None:
+        return
+    from grpc_tools import protoc  # noqa: PLC0415
+    outdir = Path(tempfile.gettempdir()) / "gs_pv_stubs"
+    outdir.mkdir(exist_ok=True)
+    rc = protoc.main([
+        "protoc",
+        f"-I{_PV_PROTO.parent}",
+        f"--python_out={outdir}",
+        f"--grpc_python_out={outdir}",
+        str(_PV_PROTO),
+    ])
+    if rc != 0:
+        raise RuntimeError("protoc failed compiling per_view.proto")
+    if str(outdir) not in sys.path:
+        sys.path.insert(0, str(outdir))
+    _pvpb = importlib.import_module("per_view_pb2")
+    _pvpbg = importlib.import_module("per_view_pb2_grpc")
+
+
+def sw_state(target: str, timeout: float = 6.0) -> list[dict]:
+    """Per-machine SW state from per/etcd via com PerView.GetSnapshot on
+    <target>:7700 — the /theia/config/<machine>/SW rows UCM writes on deploy. Each
+    {machine, current_version, target_version, campaign_id, state, state_name}.
+    Lets a Rollout compare a board's installed patch level against its to_version.
+    Raises on an unreachable aggregator."""
+    _ensure_pv_stubs()
+    out: list[dict] = []
+    with _channel(target) as ch:
+        stub = _pvpbg.PerViewStub(ch)
+        rep = stub.GetSnapshot(_pvpb.GetSnapshotCall(config_type=""), timeout=timeout)
+        for row in rep.rows:
+            if not row.config_type.endswith("/SW"):
+                continue
+            sw = _pvpb.UcmSwState()
+            try:
+                sw.ParseFromString(row.config)
+            except Exception:  # noqa: BLE001
+                continue
+            out.append({
+                "machine": sw.machine or row.config_type[:-3],
+                "current_version": sw.current_version,
+                "target_version": sw.target_version,
+                "campaign_id": sw.campaign_id,
+                "state": sw.state,
+                "state_name": (UCM_STATE[sw.state]
+                               if sw.state < len(UCM_STATE) else str(sw.state)),
+            })
+    return out
 
 
 def _channel(target: str):
