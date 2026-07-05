@@ -139,6 +139,31 @@ def deployment(dep_id: str) -> dict:
         raise HTTPException(status_code=502, detail=f"mender deployment {dep_id}: {e}")
 
 
+@router.get("/{dep_id}/devices")
+def deployment_devices(dep_id: str) -> dict:
+    """Per-device status within a Mender deployment — WHICH device is failing,
+    not just the rollup counts. (Mender API detail the GUI summary hides.)"""
+    s = settings()
+    try:
+        return {"devices": mender_client(s).deployment_devices(dep_id)}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"mender devices {dep_id}: {e}")
+
+
+@router.get("/{dep_id}/devices/{device_id}/log")
+def deployment_device_log(dep_id: str, device_id: str) -> dict:
+    """The on-device OTA update LOG (the theia-swp/theia-release update-module
+    output the device reported) — the 'Mender log' our GS UI lacked. Empty when
+    the device hasn't reported one yet."""
+    s = settings()
+    try:
+        log = mender_client(s).deployment_device_log(dep_id, device_id)
+        return {"deployment_id": dep_id, "device_id": device_id, "log": log}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502,
+                            detail=f"mender device log {dep_id}/{device_id}: {e}")
+
+
 @router.get("/artifacts/list")
 def artifacts() -> dict:
     """Artifacts uploaded to the Mender GW (what CAN be deployed)."""

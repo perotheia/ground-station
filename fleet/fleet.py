@@ -161,6 +161,44 @@ class Mender:
             raise RuntimeError(f"statistics [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"{}")
 
+    def deployment_devices(self, dep_id: str) -> list:
+        """Per-device status within a deployment (the rollup drilled down):
+        GET .../{id}/devices/list → [{id, status, substate, …}]. This is the
+        detail the GUI's status-count summary hides — WHICH device is failing.
+        The devices appear as each asks for updates + evaluates this deployment."""
+        st, data, _ = self._req(
+            "GET", f"{self.dep}/{dep_id}/devices/list?per_page=500")
+        if st == 404:                       # older/hosted path fallback
+            st, data, _ = self._req("GET", f"{self.dep}/{dep_id}/devices")
+        if st != 200:
+            raise RuntimeError(f"devices [{st}]: {data.decode(errors='replace')[:200]}")
+        return json.loads(data or b"[]")
+
+    def deployment_device_log(self, dep_id: str, device_id: str) -> str:
+        """The on-device OTA update LOG for one device in a deployment:
+        GET .../{id}/devices/{devid}/log (text/plain). This is the Mender log —
+        the actual theia-swp/theia-release update-module output the device
+        submitted — NOT exposed by our GS UI today. 404 = no log yet (the
+        device hasn't reported one). Returns the log text (or '' on 404)."""
+        st, data, _ = self._req(
+            "GET", f"{self.dep}/{dep_id}/devices/{device_id}/log")
+        if st == 404:
+            return ""
+        if st != 200:
+            raise RuntimeError(f"device log [{st}]: {data.decode(errors='replace')[:200]}")
+        return data.decode(errors="replace")
+
+    def device_deployment_history(self, device_id: str) -> list:
+        """A device's deployment HISTORY (every deployment it was part of + the
+        outcome): GET /deployments/devices/{id}/history. The per-device timeline
+        the GUI scatters across per-deployment views."""
+        st, data, _ = self._req(
+            "GET",
+            f"/api/management/v1/deployments/deployments/devices/{device_id}/history")
+        if st != 200:
+            raise RuntimeError(f"history [{st}]: {data.decode(errors='replace')[:200]}")
+        return json.loads(data or b"[]")
+
     def abort_deployment(self, dep_id: str) -> bool:
         """Abort an in-flight deployment (the Mender transport-plane cancel):
         PUT .../{id}/status {status: aborted}. Devices not yet finished stop;

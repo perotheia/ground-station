@@ -144,8 +144,23 @@ _api() {  # METHOD PATH [DATA]
 }
 
 # --- 6. start the 4.x daemons → submit auth request ---
-echo "[enroll] starting mender-authd + mender-updated (submits the auth request)"
-rig_sh sh -c 'systemctl restart mender-authd; sleep 3; systemctl restart mender-updated'
+# PRE-CHECK reachability: the #1 cause of "no pending auth set" is the board
+# can't reach the server (cert/vhost/network) — the auth request never leaves,
+# so the poll below times out with no useful reason. Verify it FIRST and fail
+# fast with the actual cause. The auth endpoint 401s on a bad/absent JWT but is
+# REACHABLE (that's what we're proving) — anything that isn't an HTTP status
+# (curl exit != 0: DNS, connect, TLS) is the real failure.
+echo "[enroll] pre-check: board → server reachability ($BASE)"
+_reach="$(rig_sh sh -c "curl -sk -o /dev/null -w '%{http_code}' --connect-timeout 5 '$BASE/api/devices/v1/authentication/auth_requests' 2>/dev/null || echo CURLFAIL")"
+case "$_reach" in
+  CURLFAIL|"") echo "[enroll] FATAL: board cannot reach $BASE (DNS/connect/TLS). Check the vhost in the rig's /etc/hosts + the CA trust." >&2; exit 1;;
+  *) echo "[enroll] server reachable (auth endpoint → HTTP $_reach)";;
+esac
+echo "[enroll] (re)bootstrap the client → submits the auth request"
+# forcebootstrap regenerates the key + resubmits, so a stale/half-enrolled state
+# from a prior run doesn't wedge us in "already authenticated, no new request".
+rig_sh sh -c 'mender-auth bootstrap --forcebootstrap 2>/dev/null || true
+              systemctl restart mender-authd; sleep 3; systemctl restart mender-updated'
 
 # --- 7. accept the device via the device-auth API. POLL for it to appear PENDING
 #        instead of a fixed sleep (the old `sleep 8` raced the client's auth
@@ -155,7 +170,9 @@ jwt="$(_api POST /api/management/v1/useradm/auth/login)"; jwt="${jwt//\"/}"
 [ -n "$jwt" ] || { echo "[enroll] server login failed"; exit 1; }
 BASICAUTH=""; AUTHHDR="Authorization: Bearer $jwt"
 dev=""; aset=""
-for _try in $(seq 1 20); do
+# 30×3s = 90s (was 20×2s=40s): the 4.x auth client's first submit can lag a
+# cold-started server + the initial DBus/keygen; give it real headroom.
+for _try in $(seq 1 30); do
     devs="$(_api GET /api/management/v2/devauth/devices)"
     read -r dev aset <<EOF2
 $(printf '%s' "$devs" | python3 -c 'import sys,json
@@ -166,9 +183,15 @@ for d in data:
         if a["status"]=="pending": print(d["id"], a["id"]); break' 2>/dev/null)
 EOF2
     [ -n "$dev" ] && break
-    sleep 2
+    sleep 3
 done
-[ -n "$dev" ] || { echo "[enroll] no pending auth set after polling — check client logs on $RIG"; exit 1; }
+if [ -z "$dev" ]; then
+    # SURFACE the client logs — the auth daemon says WHY it didn't submit
+    # (connection refused, x509 verify failed, "authorize failed", …).
+    echo "[enroll] no pending auth set after 90s — mender-auth client log:" >&2
+    rig_sh sh -c 'journalctl -u mender-authd --no-pager -n 25 2>/dev/null || true' >&2
+    exit 1
+fi
 echo "[enroll] accepting device $dev (auth set $aset)"
 _api PUT "/api/management/v2/devauth/devices/$dev/auth/$aset/status" '{"status":"accepted"}'
 
