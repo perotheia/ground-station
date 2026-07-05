@@ -73,6 +73,19 @@ case "$ACTION" in
   down)
     cd "$WORK"; docker compose down ;;
 
+  reset)
+    # Wipe the STATE (mongo = deviceauth/inventory/deployments, s3 = artifacts)
+    # but KEEP the pulled images — a clean server for a fresh e2e run without the
+    # ~2-3GB re-pull. Without this, deviceauth accumulates stale/rejected
+    # auth-sets across runs and a re-enrolling device (same MAC identity) gets
+    # "dev auth: unauthorized" instead of landing PENDING.
+    if [ -d "$WORK/compose" ]; then
+      cd "$WORK"; docker compose down -v --remove-orphans 2>/dev/null || true
+    fi
+    docker volume rm mender_mongo mender_s3 2>/dev/null || true
+    echo "[server] reset: state volumes wiped (images kept)"
+    ;;
+
   *)
-    echo "usage: up.sh {up|user|token|down}" >&2; exit 2 ;;
+    echo "usage: up.sh {up|user|token|down|reset}" >&2; exit 2 ;;
 esac
