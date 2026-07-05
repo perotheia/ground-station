@@ -31,6 +31,57 @@ function Pill({ v }) {
   return <span className="badge bg-edge/40 text-slate-200 font-mono text-[11px]">{v}</span>
 }
 
+// One timeline event. An app (Mender) deployment event carries a `log_ref` —
+// expand it to fetch + show that device's Mender deployment LOG inline (the
+// on-device update-module output), reusing this same per-device panel.
+function TimelineEvent({ e }) {
+  const [open, setOpen] = useState(false)
+  const [log, setLog] = useState(null)   // null=unloaded, ''=empty, string=text
+  const [err, setErr] = useState(null)
+  const ref = e.log_ref
+  async function toggle() {
+    const next = !open
+    setOpen(next)
+    if (next && log === null && ref) {
+      try {
+        const r = await api.deploymentDeviceLog(ref.deployment_id, ref.device_id)
+        setLog(r?.log ?? '')
+      } catch (x) { setErr(x.message) }
+    }
+  }
+  return (
+    <li className="ml-4 mb-3">
+      <span className="absolute -left-[5px] w-2.5 h-2.5 rounded-full"
+        style={{ background: AUTH_COLOR[e.authority] || '#90A4AE' }} />
+      <div className="flex items-baseline gap-2">
+        <span className="badge text-[10px]" style={{ background: (AUTH_COLOR[e.authority] || '#90A4AE') + '22', color: AUTH_COLOR[e.authority] || '#90A4AE' }}>
+          {e.authority}
+        </span>
+        <span className="text-sm text-slate-200">{e.title}</span>
+        {ref && (
+          <button className="btn-ghost text-[10px] px-1 py-0" onClick={toggle}
+            title="Mender deployment log for this device">
+            {open ? 'log ▾' : 'log ▸'}
+          </button>
+        )}
+        {e.status && <span className="text-[11px] text-muted ml-auto">{typeof e.status === "string" ? e.status : JSON.stringify(e.status)}</span>}
+      </div>
+      {e.detail && <div className="text-[11px] text-muted">{typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail)}</div>}
+      {e.ts && <div className="text-[10px] text-muted/70">{String(e.ts)}</div>}
+      {open && (
+        <div className="mt-1 rounded bg-black/40 border border-edge/50 p-2">
+          {err && <div className="text-[11px] text-red-400">log: {err}</div>}
+          {!err && log === null && <div className="text-[11px] text-muted">loading log…</div>}
+          {!err && log === '' && <div className="text-[11px] text-muted">no log reported by this device yet.</div>}
+          {!err && log && (
+            <pre className="text-[10px] leading-tight text-slate-300 whitespace-pre-wrap max-h-64 overflow-auto font-mono">{log}</pre>
+          )}
+        </div>
+      )}
+    </li>
+  )
+}
+
 function Timeline({ device, onClose }) {
   const [tl, setTl] = useState(null)
   const [err, setErr] = useState(null)
@@ -83,21 +134,7 @@ function Timeline({ device, onClose }) {
         {!tl && !err && <div className="text-sm text-muted">loading timeline…</div>}
         {tl?.errors && <div className="text-[11px] text-amber-400 mb-2">partial: {Object.entries(tl.errors).map(([k, v]) => `${k}: ${v}`).join('; ')}</div>}
         <ol className="relative border-l border-edge/60 ml-2">
-          {events.map((e, i) => (
-            <li key={i} className="ml-4 mb-3">
-              <span className="absolute -left-[5px] w-2.5 h-2.5 rounded-full"
-                style={{ background: AUTH_COLOR[e.authority] || '#90A4AE' }} />
-              <div className="flex items-baseline gap-2">
-                <span className="badge text-[10px]" style={{ background: (AUTH_COLOR[e.authority] || '#90A4AE') + '22', color: AUTH_COLOR[e.authority] || '#90A4AE' }}>
-                  {e.authority}
-                </span>
-                <span className="text-sm text-slate-200">{e.title}</span>
-                {e.status && <span className="text-[11px] text-muted ml-auto">{typeof e.status === "string" ? e.status : JSON.stringify(e.status)}</span>}
-              </div>
-              {e.detail && <div className="text-[11px] text-muted">{typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail)}</div>}
-              {e.ts && <div className="text-[10px] text-muted/70">{String(e.ts)}</div>}
-            </li>
-          ))}
+          {events.map((e, i) => <TimelineEvent key={i} e={e} />)}
           {events.length === 0 && tl && <li className="ml-4 text-sm text-muted">no events.</li>}
         </ol>
       </div>

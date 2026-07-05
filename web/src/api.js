@@ -95,6 +95,10 @@ export const api = {
   removeGroup: (id, group) =>
     call(`/devices/${id}/group?group=${encodeURIComponent(group)}`, { method: 'DELETE' }),
   deviceTimeline: (id) => call(`/devices/${id}/timeline`),
+  // The per-device Mender deployment LOG (the on-device update-module output) —
+  // the timeline's app-deployment events expand to show it.
+  deploymentDeviceLog: (depId, deviceId) =>
+    call(`/deployments/${depId}/devices/${deviceId}/log`),
 
   // ── BASE deployment (colony) ──────────────────────────────────────────────
   deployBase: (rig, kind = 'orchestrate', ip, device_id, scope) =>

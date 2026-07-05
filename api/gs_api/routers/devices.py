@@ -649,6 +649,11 @@ def device_timeline(device_id: str) -> dict:
                         "detail": (d.get("status") or "?"),
                         "ts": d.get("created"), "status": d.get("status"),
                         "id": d.get("id"),
+                        # a Mender app deployment has a per-device log — the
+                        # frontend expands the event to fetch it
+                        # (GET /api/deployments/{id}/devices/{device_id}/log).
+                        "log_ref": {"deployment_id": d.get("id"),
+                                    "device_id": device_id},
                     })
     except Exception as e:  # noqa: BLE001
         errors["app"] = str(e)
