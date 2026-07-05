@@ -119,8 +119,9 @@ function Targets({ sel, setSel, onAssigned }) {
             {error && <tr><td className="cell text-red-300" colSpan={5}>fleet unavailable — see banner</td></tr>}
             {!loading && !error && devices.length === 0 && <tr><td className="cell text-muted" colSpan={5}>no devices</td></tr>}
             {devices.map((d) => (
-              <tr key={d.id} onClick={() => setSel(d.id)}
-                  className={`cursor-pointer hover:bg-edge/20 ${sel === d.id ? 'row-sel' : ''}`}>
+              <tr key={d.id} onClick={() => setSel(sel === d.id ? null : d.id)}
+                  className={`cursor-pointer hover:bg-edge/20 ${sel === d.id ? 'row-sel' : ''}`}
+                  title={sel === d.id ? 'click again to clear the filter' : 'filter Action History to this target'}>
                 <td className="cell font-mono text-xs">{d.name || d.id.slice(0, 10)}</td>
                 <td className="cell text-xs text-muted">{d.base_version || '—'}</td>
                 <td className="cell text-xs text-muted">{d.artifact || '—'}</td>
@@ -200,18 +201,27 @@ const ACTION_LABEL = {
 }
 // lifecycle → {text, color}. colony: pending/inprogress/finished(+stats);
 // Mender: pending/inprogress/finished/failure/already-installed/aborted.
+const _OK = { text: 'OK', color: '#4CAF50' }
+const _NOK = { text: 'NOK', color: '#E57373' }
+const _CANCELLED = { text: 'cancelled', color: '#E57373' }
 function lifecycle(d) {
   const st = d.status
+  // base (colony) carries a shell return code: rc!=0 is a FAILED orchestrate even
+  // though the job "finished". Trust rc when present.
+  if (d.authority === 'base' && d.rc != null && d.rc !== 0) return _NOK
+  if (st === 'aborted') return _CANCELLED
   if (st === 'finished' || st === 'finished/success' || st === 'success') {
     const s = d.statistics?.status || {}
-    const fail = (s.failure || 0) > 0 || st === 'failure'
-    const ok = !fail
-    return { text: ok ? 'OK' : 'NOK', color: ok ? '#4CAF50' : '#E57373' }
+    // A Mender deployment that was cancelled reports finished with aborted>0 (and
+    // often noartifact>0) — NOT a success. Count aborted/failure/noartifact as bad.
+    if ((s.aborted || 0) > 0) return _CANCELLED
+    if ((s.failure || 0) > 0 || (s.noartifact || 0) > 0) return _NOK
+    return _OK
   }
-  if (st === 'failure' || st === 'aborted') return { text: 'NOK', color: '#E57373' }
+  if (st === 'failure') return _NOK
   if (st === 'inprogress' || st === 'installing' || st === 'downloading')
     return { text: 'installing…', color: '#FFB300' }
-  if (st === 'already-installed') return { text: 'OK', color: '#4CAF50' }
+  if (st === 'already-installed') return _OK
   return { text: st || 'pending', color: '#64B5F6' }   // pending / scheduled / …
 }
 function actionLabel(d) {
@@ -223,69 +233,164 @@ function actionLabel(d) {
   return { name: 'App', sub: d.artifact_name || d.name || '' }
 }
 
-function ActionHistory({ targetName, targetRig }) {
-  const { data, refresh } = usePoll(() => api.deployments(), [], 4000)
-  const rig = targetRig || targetName
-  // per-target 'cleared before' epoch (seconds) — hides app rows the operator
-  // cleared (Mender keeps its own records; colony base rows are pruned server-side).
-  const clrKey = rig ? `gs.clearedBefore.${rig}` : null
-  const clearedBefore = clrKey ? Number(localStorage.getItem(clrKey) || 0) : 0
+const _FINISHED = ['finished', 'finished/success', 'success', 'failure', 'aborted', 'already-installed']
+const isLive = (d) => !_FINISHED.includes(d.status)
+const epochOf = (d) => {
+  const c = d.created || d.created_ts
+  if (typeof c === 'number') return c
+  const t = Date.parse(c); return isNaN(t) ? 0 : t / 1000
+}
+
+// A CancelBtn — the ACT [x] on any live action or a deployment group. Disabled
+// (dimmed ×) once the action is finished; spins while the cancel is in flight.
+function CancelBtn({ live, onCancel, title }) {
   const [busy, setBusy] = useState(false)
-  const epochOf = (d) => {
-    const c = d.created || d.created_ts
-    if (typeof c === 'number') return c
-    const t = Date.parse(c); return isNaN(t) ? 0 : t / 1000
+  if (!live) return <span className="text-muted/40 text-xs" title="finished">×</span>
+  return (
+    <button className="text-danger hover:text-red-300 text-sm leading-none px-1 disabled:opacity-50"
+      disabled={busy} title={title || 'cancel'}
+      onClick={async (e) => { e.stopPropagation(); setBusy(true); try { await onCancel() } finally { setBusy(false) } }}>
+      {busy ? '…' : '×'}
+    </button>
+  )
+}
+
+// Group the flat action rows into DEPLOYMENTS. A Distribution deploy fans out
+// per role into base + app rows created together; correlate them by the deploy
+// name prefix (app rows: "<dist>-<role>-<swp>") + a coarse timestamp bucket, so
+// one operator click shows as ONE Deployment parent with its child actions.
+// A Distribution deploy fans out per role into base (Orchestrate) + app (App)
+// rows created in the SAME instant. Correlate the WHOLE fan-out — base AND app —
+// into one Deployment, keyed by the distribution name + a coarse time bucket.
+// The app row's name is "<dist>-<role>-<swp>"; the base row carries no dist name,
+// so we recover the <dist> from the app rows in the same time bucket and fold the
+// base rows (matched by that bucket) under it. A base row with no app sibling in
+// its bucket (a bare colony action — cleanup/provision) stays its own group.
+function groupDeployments(rows) {
+  const bucket = (d) => Math.round(epochOf(d) / 60)    // 1-min bucket
+  const distOf = (name) => {
+    const m = String(name || '').match(/^(.*?)-[a-z0-9]+-[^-]+-[\d.]+/i)
+    return m ? m[1] : null
   }
+  // 1) collect the distribution name present in each time bucket (from app rows).
+  const bucketDist = new Map()
+  for (const d of rows) {
+    if (d.authority === 'app') {
+      const dist = distOf(d.name)
+      if (dist) bucketDist.set(bucket(d), dist)
+    }
+  }
+  const key = (d) => {
+    const b = bucket(d)
+    const dist = bucketDist.get(b)   // a distribution deploy happened this bucket
+    if (dist) return `${dist}@${b}`  // fold BOTH base + app of that fan-out together
+    // otherwise: a standalone action (bare orchestrate/cleanup, or an app with no
+    // recognizable dist name) — its own group.
+    return d.authority === 'app'
+      ? `${distOf(d.name) || d.artifact_name || d.name}@${b}`
+      : `${d.rig || 'base'}:${d.kind || ''}@${b}`
+  }
+  const groups = new Map()
+  for (const d of rows) {
+    const k = key(d)
+    if (!groups.has(k)) groups.set(k, [])
+    groups.get(k).push(d)
+  }
+  // Sort children within a group: base (Orchestrate) first, then app — reads as
+  // "provision the runtime, then overlay the app".
+  const ord = (d) => (d.authority === 'base' ? 0 : 1)
+  return [...groups.entries()].map(([k, items]) => ({
+    k, items: items.sort((a, b) => ord(a) - ord(b) || epochOf(a) - epochOf(b)),
+  })).sort((a, b) => Math.max(...b.items.map(epochOf)) - Math.max(...a.items.map(epochOf)))
+}
+
+function ActionHistory({ targetName }) {
+  const { data, refresh } = usePoll(() => api.deployments(), [], 4000)
+  const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState({})           // group key → expanded?
+  // GLOBAL cleared-before epoch (not per-target — one shared surface; a deleted
+  // target must not orphan its history). Hides app (Mender) rows older than the
+  // last Clear; base rows are pruned server-side.
+  const clearedBefore = Number(localStorage.getItem('gs.clearedBefore') || 0)
+
   const doClear = async () => {
-    if (!rig) return
     setBusy(true)
     const before = Date.now() / 1000
     try {
-      await api.clearActions(rig, before)
-      if (clrKey) localStorage.setItem(clrKey, String(before))
+      await api.clearActions(null, before)       // rig=null → GLOBAL prune
+      localStorage.setItem('gs.clearedBefore', String(before))
       refresh()
-    } catch (e) { /* surfaced by the empty list / next poll */ }
+    } catch (e) { /* surfaced by the next poll */ }
     setBusy(false)
   }
+  const cancel = async (d) => { try { await api.cancelAction(d.id, d.authority || 'app') } finally { refresh() } }
+
   let rows = data?.deployments || []
-  // filter to the selected target: colony rows by rig, app rows by name-contains.
+  // TOGGLE filter: a selected target scopes the view; deselect → global.
   if (targetName) {
     rows = rows.filter((d) => (d.authority === 'base' && d.rig === targetName)
       || (d.authority === 'app' && String(d.name || '').includes(targetName)))
-    // hide app rows the operator already cleared (server pruned the base rows).
-    if (clearedBefore) rows = rows.filter((d) => d.authority !== 'app' || epochOf(d) > clearedBefore)
   }
-  rows = rows.slice(0, 50)
+  if (clearedBefore) rows = rows.filter((d) => d.authority !== 'app' || epochOf(d) > clearedBefore)
+  const groups = groupDeployments(rows).slice(0, 40)
+
   return (
     <div className="pane min-h-0">
-      <div className="pane-head flex items-center">Action History {targetName ? <span className="text-muted font-normal">: {targetName}</span> : ''}
-        {rig && <button className="btn-ghost text-[11px] ml-auto" disabled={busy}
-                        title="prune finished base actions + hide app actions for this target"
-                        onClick={doClear}>{busy ? '…' : 'Clear'}</button>}</div>
+      <div className="pane-head flex items-center">Action History
+        {targetName && <span className="text-muted font-normal">: {targetName}</span>}
+        <button className="btn-ghost text-[11px] ml-auto" disabled={busy}
+                title="prune finished base actions everywhere + hide older app actions (global)"
+                onClick={doClear}>{busy ? '…' : 'Clear all'}</button></div>
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">
-            <tr><th className="th">Plane</th><th className="th">Action</th><th className="th">Date</th><th className="th">Status</th></tr>
+            <tr><th className="th">Plane</th><th className="th">Action</th><th className="th">Date</th><th className="th">Status</th><th className="th text-right">Act</th></tr>
           </thead>
           <tbody className="divide-y divide-edge/40">
-            {rows.map((d) => {
-              const lc = lifecycle(d)
-              const a = actionLabel(d)
-              const live = !['finished', 'failure', 'aborted', 'success', 'already-installed'].includes(d.status)
-              return (
-                <tr key={d.id} className="hover:bg-edge/20">
-                  <td className="cell"><span className={`badge ${d.authority === 'base' ? 'bg-violet-500/15 text-violet-300' : 'bg-cyan-500/15 text-cyan-300'}`}>{d.authority || 'app'}</span></td>
-                  <td className="cell text-xs"><span className="text-slate-200">{a.name}</span>
-                    {a.sub && <span className="block text-[10px] text-muted font-mono">{a.sub}</span>}</td>
-                  <td className="cell text-[11px] text-muted">{fmtTs(d.created || d.created_ts)}</td>
-                  <td className="cell text-xs" style={{ color: lc.color }}>
-                    {live && <span className="inline-block w-1.5 h-1.5 rounded-full mr-1 animate-pulse" style={{ background: lc.color }} />}
-                    {lc.text}
+            {groups.map(({ k, items }) => {
+              const anyLive = items.some(isLive)
+              const texts = items.map((d) => lifecycle(d).text)
+              const worst = texts.includes('NOK') ? 'NOK'
+                : texts.includes('cancelled') ? 'cancelled'
+                : anyLive ? 'in progress' : 'OK'
+              const worstColor = worst === 'OK' ? '#4CAF50'
+                : worst === 'in progress' ? '#FFB300' : '#E57373'
+              const single = items.length === 1
+              const expanded = single || open[k]
+              // Parent (Deployment) row — cancels ALL its live children at once.
+              const parent = !single && (
+                <tr key={k} className="hover:bg-edge/20 bg-edge/10 cursor-pointer"
+                    onClick={() => setOpen((o) => ({ ...o, [k]: !o[k] }))}>
+                  <td className="cell"><span className="badge bg-slate-500/20 text-slate-300">deploy</span></td>
+                  <td className="cell text-xs"><span className="text-slate-100">{open[k] ? '▾' : '▸'} Deployment</span>
+                    <span className="block text-[10px] text-muted font-mono">{k.split('@')[0]} · {items.length} action(s)</span></td>
+                  <td className="cell text-[11px] text-muted">{fmtTs(Math.max(...items.map(epochOf)))}</td>
+                  <td className="cell text-xs" style={{ color: worstColor }}>{worst}</td>
+                  <td className="cell text-right">
+                    <CancelBtn live={anyLive} title="cancel all live actions in this deployment"
+                      onCancel={async () => { for (const d of items) if (isLive(d)) await cancel(d) }} />
                   </td>
                 </tr>
               )
+              const childRows = (expanded ? items : []).map((d) => {
+                const lc = lifecycle(d); const a = actionLabel(d); const live = isLive(d)
+                return (
+                  <tr key={d.id} className={`hover:bg-edge/20 ${single ? '' : 'bg-black/10'}`}>
+                    <td className={`cell ${single ? '' : 'pl-5'}`}><span className={`badge ${d.authority === 'base' ? 'bg-violet-500/15 text-violet-300' : 'bg-cyan-500/15 text-cyan-300'}`}>{d.authority || 'app'}</span></td>
+                    <td className="cell text-xs"><span className="text-slate-200">{a.name}</span>
+                      {a.sub && <span className="block text-[10px] text-muted font-mono">{a.sub}</span>}</td>
+                    <td className="cell text-[11px] text-muted">{fmtTs(d.created || d.created_ts)}</td>
+                    <td className="cell text-xs" style={{ color: lc.color }}>
+                      {live && <span className="inline-block w-1.5 h-1.5 rounded-full mr-1 animate-pulse" style={{ background: lc.color }} />}
+                      {lc.text}
+                    </td>
+                    <td className="cell text-right"><CancelBtn live={live} onCancel={() => cancel(d)} /></td>
+                  </tr>
+                )
+              })
+              return <React.Fragment key={k}>{parent}{childRows}</React.Fragment>
             })}
-            {rows.length === 0 && <tr><td className="cell text-muted" colSpan={4}>no actions yet</td></tr>}
+            {groups.length === 0 && <tr><td className="cell text-muted" colSpan={5}>no actions yet</td></tr>}
           </tbody>
         </table>
       </div>
@@ -443,7 +548,7 @@ export function Deployment() {
       <div className="flex-1 grid grid-cols-3 grid-rows-1 gap-2 min-h-0">
         <Targets sel={selTarget} setSel={setSelTarget} />
         <DistributionsColumn sel={selDist} setSel={setSelDist} />
-        <ActionHistory targetName={target?.name} targetRig={target?.attributes?.machine || target?.name} />
+        <ActionHistory targetName={target?.name} />
       </div>
       {showDeploy && selDist && <DeployDistDialog dist={selDist} devices={devices}
         onClose={() => setShowDeploy(false)}

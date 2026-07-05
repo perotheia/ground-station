@@ -59,10 +59,21 @@ class Colony:
             raise RuntimeError(f"colony create [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"{}")
 
+    def abort(self, did: str) -> dict:
+        """Cancel an in-flight base (colony) deployment: POST /deployments/{did}/
+        abort. A pending/running Orchestrate stops; a finished one is a no-op."""
+        st, data = self._req("POST", f"/deployments/{did}/abort", {})
+        if st not in (200, 202, 204):
+            raise RuntimeError(f"colony abort [{st}]: {data.decode(errors='replace')[:200]}")
+        return json.loads(data or b"{}")
+
     def prune(self, rig: str | None = None, finished_only: bool = True) -> dict:
-        """Prune colony journal entries (DELETE /deployments). Default the
-        finished base actions for `rig`."""
-        q = f"?rig={rig}&finished_only={'true' if finished_only else 'false'}"
+        """Prune colony journal entries (DELETE /deployments). `rig` scopes to
+        one rig; None/"" prunes EVERY rig (global clear). Omit the rig param
+        entirely when None so the colony API doesn't match a literal 'None'."""
+        q = f"?finished_only={'true' if finished_only else 'false'}"
+        if rig:
+            q += f"&rig={rig}"
         st, data = self._req("DELETE", "/deployments" + q)
         if st not in (200, 204):
             raise RuntimeError(f"colony prune [{st}]: {data.decode(errors='replace')[:200]}")
