@@ -71,10 +71,25 @@ install -d -m0755 /etc/mender
 cp /tmp/mender-server-ca.crt /etc/mender/server.crt
 cp /tmp/mender-server-ca.crt /usr/local/share/ca-certificates/mender-server.crt
 update-ca-certificates >/dev/null 2>&1 || true
+# ArtifactVerifyKey (app-plane authenticity): include it ONLY when the public
+# verify key has already been provisioned onto the rig (colony's
+# install-verify-key pulls it from S3 to /etc/mender/artifact-verify-key.pem).
+# Pointing at a missing key would make mender-update fail-closed on EVERY
+# artifact; so we key the setting off the file's presence. `theia release-swp`
+# signs with the matching private key; mender-update then REFUSES anything not
+# signed by it.
+# NB: \$ escapes keep VERIFY_LINE + the -f test on the RIG's shell (the outer
+# <<EOF expands controller vars like \$SERVER_HOST first; a bare \$VERIFY_LINE
+# would resolve — empty — on the CONTROLLER).
+VERIFY_LINE=""
+if [ -f /etc/mender/artifact-verify-key.pem ]; then
+  VERIFY_LINE='  "ArtifactVerifyKey": "/etc/mender/artifact-verify-key.pem",'
+fi
 cat > /etc/mender/mender.conf <<CONF
 {
   "ServerURL": "https://$SERVER_HOST",
   "ServerCertificate": "/etc/mender/server.crt",
+\$VERIFY_LINE
   "TenantToken": "",
   "InventoryPollIntervalSeconds": 30,
   "UpdatePollIntervalSeconds": 30,
