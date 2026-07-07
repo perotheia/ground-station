@@ -86,6 +86,11 @@ export const api = {
   preauthorize: (controller_id, pubkey, name, fleet, description) =>
     call('/devices/preauthorize', { method: 'POST', body: JSON.stringify({ controller_id, pubkey, name, fleet, description }) }),
   ourPubkey: () => call('/devices/our-pubkey'),
+  // Per-device SWP artifact-verify key (opt-in override of the fleet key). Empty
+  // pubkey clears it. Stored as a Mender tag; colony provisions it onto the rig.
+  getVerifyKey: (id) => call(`/devices/${id}/verify-key`),
+  setVerifyKey: (id, pubkey) =>
+    call(`/devices/${id}/verify-key`, { method: 'POST', body: JSON.stringify({ pubkey }) }),
   setIp: (id, ip, kind) =>
     call(`/devices/${id}/ip`, { method: 'POST', body: JSON.stringify({ ip, kind }) }),
   addToVpn: (id, ip) =>

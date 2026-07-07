@@ -99,6 +99,29 @@ class PlaneClient:
         self._dists = s.s3_distributions_bucket
         self._rollouts = s.s3_rollouts_bucket
 
+    # ── per-device SWP verify key (the opt-in override of the fleet key) ────────
+    # The Mender tag is the operator record of truth; we MIRROR it to the runtime
+    # provisioning plane at provisioning/by-name/<device>.pem so colony's
+    # install-mender.yml (which fetches from the runtime bucket, and does NOT talk
+    # to Mender) can prefer it over the fleet key. Keyed by device NAME — the
+    # identity colony's `provision <target>` already has.
+    def _verify_key_s3key(self, device: str) -> str:
+        return f"provisioning/by-name/{device}.pem"
+
+    def put_verify_key(self, device: str, pem: str) -> None:
+        """Mirror a device's verify PEM to the runtime plane for colony to fetch."""
+        self._s3.put_object(Bucket=self._runtime,
+                            Key=self._verify_key_s3key(device),
+                            Body=pem.encode(), ContentType="application/x-pem-file")
+
+    def delete_verify_key(self, device: str) -> None:
+        """Drop a device's per-device key → colony falls back to the fleet key."""
+        try:
+            self._s3.delete_object(Bucket=self._runtime,
+                                   Key=self._verify_key_s3key(device))
+        except Exception:  # noqa: BLE001 — absent is fine (idempotent clear)
+            pass
+
     def _indexes(self, bucket: str) -> list[dict]:
         out: list[dict] = []
         try:

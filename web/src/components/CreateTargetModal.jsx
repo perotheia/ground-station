@@ -10,6 +10,7 @@ export function CreateTargetModal({ onClose, onCreated }) {
   const [name, setName] = useState('')
   const [type, setType] = useState('')
   const [desc, setDesc] = useState('')
+  const [verifyKey, setVerifyKey] = useState('')   // optional per-device SWP verify PEM
   const [types, setTypes] = useState([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
@@ -31,13 +32,22 @@ export function CreateTargetModal({ onClose, onCreated }) {
   }
   const save = async () => {
     if (!controllerId.trim()) { setErr('Controller ID is required — reload from a Host IP'); return }
+    const pemTrim = verifyKey.trim()
+    if (pemTrim && !(pemTrim.startsWith('-----BEGIN PUBLIC KEY-----') &&
+                     pemTrim.endsWith('-----END PUBLIC KEY-----'))) {
+      setErr('SWP verify key must be a PEM public key (-----BEGIN PUBLIC KEY----- … END)'); return
+    }
     setBusy(true); setErr(null)
     try {
       // enrol = accept the pending Mender auth-set by MAC + set the operator name
       // + the device_type (Type). Description is an optional tag.
       // set the device's mender identity to our UUID so accept-by-UUID matches
       if (probedHost) await api.setIdentity(probedHost, controllerId.trim())
-      await api.connect(controllerId.trim(), type || undefined, undefined, name || undefined)
+      const r = await api.connect(controllerId.trim(), type || undefined, undefined, name || undefined)
+      // Optional: pin a PER-DEVICE SWP verify key (opt-in override of the fleet
+      // key). Empty → the rig uses the fleet key. Applied at next provision.
+      const pem = verifyKey.trim()
+      if (pem && r && r.device_id) await api.setVerifyKey(r.device_id, pem)
       onCreated()
     } catch (e) { setErr(e.message) }
     setBusy(false)
@@ -82,6 +92,36 @@ export function CreateTargetModal({ onClose, onCreated }) {
             <label className="w-28 text-right text-xs text-muted pt-1">Description</label>
             <textarea className="input flex-1 text-sm h-16" placeholder="My iMX8 device #1."
                       value={desc} onChange={(e) => setDesc(e.target.value)} />
+          </div>
+          <div className="flex items-start gap-2">
+            <label className="w-28 text-right text-xs text-muted pt-1">
+              SWP Verify Key
+              <span className="block text-[10px] text-slate-500">optional</span>
+            </label>
+            <div className="flex-1">
+              <textarea className="input w-full text-sm h-16 font-mono text-[11px]"
+                        placeholder="-----BEGIN PUBLIC KEY-----&#10;… (paste this rig's SWP verify PEM, or leave blank to use the fleet key)"
+                        value={verifyKey} onChange={(e) => setVerifyKey(e.target.value)} />
+              <div className="flex items-center gap-2 mt-1">
+                <label className="btn-ghost text-[11px] cursor-pointer">
+                  📎 upload .pem
+                  <input type="file" accept=".pem,.pub,.key,.crt" className="hidden"
+                         onChange={(e) => {
+                           const f = e.target.files && e.target.files[0]
+                           if (!f) return
+                           const rd = new FileReader()
+                           rd.onload = () => setVerifyKey(String(rd.result || '').trim())
+                           rd.readAsText(f)
+                         }} />
+                </label>
+                {verifyKey.trim() &&
+                  <button className="text-[11px] text-slate-400 hover:text-slate-200"
+                          onClick={() => setVerifyKey('')}>clear</button>}
+                <span className="text-[10px] text-slate-500">
+                  pins a per-rig verify key (overrides the fleet key); applied at provision
+                </span>
+              </div>
+            </div>
           </div>
         </div>
 

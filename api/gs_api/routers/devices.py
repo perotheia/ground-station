@@ -331,6 +331,109 @@ def preauthorize(req: PreauthorizeRequest) -> dict:
     return {"controller_id": cid, "status": "preauthorized", **r}
 
 
+class VerifyKeyRequest(BaseModel):
+    # The device's OWN SWP artifact-verify PUBLIC key (PEM). Empty/None clears the
+    # per-device override, so provisioning falls back to the FLEET verify key.
+    pubkey: str | None = None
+
+
+# Basic sanity so we don't tag a device with garbage that would then fail-close it
+# at provision. A PEM public key is a small ASCII blob framed by BEGIN/END PUBLIC
+# KEY. We store the whole PEM verbatim as a Mender tag (well under the tag size).
+def _looks_like_pubkey(pem: str) -> bool:
+    pem = pem.strip()
+    return (pem.startswith("-----BEGIN PUBLIC KEY-----")
+            and pem.rstrip().endswith("-----END PUBLIC KEY-----")
+            and len(pem) < 4096)
+
+
+@router.get("/{device_id}/verify-key")
+def get_verify_key(device_id: str) -> dict:
+    """Is a PER-DEVICE SWP verify key pinned on this rig? Returns the pinned PEM
+    (so the operator can review/rotate it) or none — in which case provisioning
+    uses the FLEET verify key. The key is stored as the Mender tag
+    `swp_verify_key`; colony's provision prefers it over the S3 fleet key."""
+    s = settings()
+    try:
+        for d in mender_client(s).devices(None):
+            if d.get("id") == device_id:
+                attrs = _flatten(d).get("attributes", {}) or {}
+                pem = attrs.get("swp_verify_key")
+                return {"device_id": device_id, "pinned": bool(pem),
+                        "pubkey": pem or None}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"verify-key read: {e}")
+    return {"device_id": device_id, "pinned": False, "pubkey": None}
+
+
+@router.post("/{device_id}/verify-key", dependencies=[Depends(_require_key)])
+def set_verify_key(device_id: str, req: VerifyKeyRequest) -> dict:
+    """Pin (or clear) a PER-DEVICE SWP verify key on this rig — the OPT-IN override
+    of the fleet-wide key. Stored as the Mender tag `swp_verify_key`; colony's
+    provision writes it to /etc/mender/artifact-verify-key.pem (preferred over the
+    S3 fleet key). Only the operator-signed SWP whose PRIVATE key matches THIS PEM
+    will then install on this rig. Empty pubkey CLEARS the override (back to the
+    fleet key). We DON'T touch other tags — set_tags replaces the whole set, so we
+    merge the current tags first."""
+    s = settings()
+    m = mender_client(s)
+    pem = (req.pubkey or "").strip()
+    if pem and not _looks_like_pubkey(pem):
+        raise HTTPException(
+            status_code=400,
+            detail="not a PEM public key (expected -----BEGIN PUBLIC KEY----- … "
+                   "-----END PUBLIC KEY-----, < 4KB)")
+    # merge: read current tags, set/drop swp_verify_key, PUT the whole set back
+    # (set_tags replaces). Best-effort read; on failure we still write our key.
+    # Also capture the device NAME — colony fetches the per-device key from S3 by
+    # name (provisioning/by-name/<name>.pem), the identity `provision <target>` has.
+    tags: dict = {}
+    device_name: str | None = None
+    try:
+        for d in m.devices(None):
+            if d.get("id") == device_id:
+                flat = _flatten(d)
+                device_name = flat.get("name") or flat.get("attributes", {}).get("name")
+                tags = {k: v for k, v in (flat.get("attributes", {}) or {}).items()
+                        # keep only operator tags (scope=tags); inventory attrs are
+                        # reported by the device and must not be echoed back as tags.
+                        if k in ("name", "device_type", "description",
+                                 "local_ip", "remote_ip", "base_version",
+                                 "base_authority", "swp_verify_key")}
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    if pem:
+        tags["swp_verify_key"] = pem
+    else:
+        tags.pop("swp_verify_key", None)
+    try:
+        m.set_tags(device_id, tags)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"verify-key set: {e}")
+    # MIRROR to the runtime provisioning plane so colony (which fetches from S3,
+    # not Mender) can prefer the per-device key. Keyed by device NAME. Best-effort
+    # but reported — a mirror failure means colony would fall back to the fleet key.
+    mirror_ok = None
+    if device_name:
+        from ..clients import PlaneClient
+        try:
+            pc = PlaneClient(s)
+            if pem:
+                pc.put_verify_key(device_name, pem)
+            else:
+                pc.delete_verify_key(device_name)
+            mirror_ok = True
+        except Exception:  # noqa: BLE001
+            mirror_ok = False
+    return {"device_id": device_id, "device_name": device_name,
+            "pinned": bool(pem), "s3_mirrored": mirror_ok,
+            "note": ("per-device verify key pinned — re-provision this rig to apply"
+                     if pem else
+                     "per-device verify key cleared — rig falls back to the fleet key "
+                     "on next provision")}
+
+
 @router.get("/pending")
 def pending() -> dict:
     """Boards Mender knows but hasn't accepted yet (auth-set status=pending) — the
