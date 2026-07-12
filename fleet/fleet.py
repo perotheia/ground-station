@@ -307,10 +307,36 @@ class Mender:
             raise RuntimeError(f"assign_group [{st}]: {data.decode(errors='replace')[:200]}")
         return True
 
-    def set_tags(self, device_id: str, tags: dict) -> bool:
+    def get_tags(self, device_id: str) -> dict:
+        """Current scope=tags inventory attributes for a device, as {name: value}.
+        Empty on a device with no tags (or a read error — best effort, since the
+        only caller is set_tags's merge and a fresh device legitimately has none)."""
+        try:
+            st, data, _ = self._req(
+                "GET", f"/api/management/v1/inventory/devices/{device_id}")
+            if st != 200:
+                return {}
+            d = json.loads(data or b"{}")
+            return {a["name"]: a["value"]
+                    for a in d.get("attributes", []) or []
+                    if a.get("scope") == "tags"}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def set_tags(self, device_id: str, tags: dict, *, replace: bool = False) -> bool:
         """Operator-set inventory TAGS (scope=tags). The base-state mirror (P2)
-        writes base_version/base_authority here so Mender UX reflects colony. PUT
-        replaces the whole tag set; {} clears. (Verified: 200 on the live rpi4.)"""
+        writes base_version/base_authority here so Mender UX reflects colony.
+
+        The Mender tags PUT REPLACES the whole tag set, so a naive write of one
+        key wipes every other tag (the `name` display tag vanished on every
+        deploy — the local_ip/base_version writer clobbered it). Default now
+        MERGES: read the current tags and overlay the new keys, so each caller
+        only touches its own keys. Pass replace=True for a deliberate full
+        rewrite / clear ({} + replace=True clears)."""
+        if not replace:
+            merged = self.get_tags(device_id)
+            merged.update(tags)
+            tags = merged
         st, data, _ = self._req(
             "PUT", f"/api/management/v1/inventory/devices/{device_id}/tags",
             body=[{"name": k, "value": v} for k, v in tags.items()])

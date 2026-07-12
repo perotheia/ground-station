@@ -276,7 +276,10 @@ def deploy_base(req: BaseDeployRequest) -> dict:
                         continue
                     v = a.get("value")
                     keep[a["name"]] = v[0] if isinstance(v, list) and v else v
-                m.set_tags(dev["id"], keep)
+                # replace=True: this is a base-state CLEAR (drop the
+                # base_* keys), so a full rewrite is intended — the new
+                # merge default would keep the dropped keys.
+                m.set_tags(dev["id"], keep, replace=True)
         except Exception:  # noqa: BLE001
             pass            # tag-clear is best-effort; cleanup already ran
     elif req.mirror and ok:
