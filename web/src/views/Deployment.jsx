@@ -455,8 +455,12 @@ function DistributionsColumn({ sel, setSel }) {
 function _devAbi(d) {
   const os = (d.attributes?.os || '').toLowerCase(), k = (d.attributes?.kernel || '').toLowerCase()
   const arch = /aarch64|arm64/.test(k + os) ? 'arm64' : /x86_64|amd64/.test(k) ? 'amd64' : ''
-  const distro = /focal|20\.04/.test(os) ? 'focal' : /bookworm|trixie|debian gnu\/linux 1[23]/.test(os) ? 'bookworm'
-    : /ubuntu.*24/.test(os) ? 'ubuntu24' : ''
+  // LSB codenames — must match the target registry abi_key (targets.bzl):
+  // noble (24.04), jammy (22.04), focal (20.04), bookworm (Debian 12/trixie).
+  const distro = /focal|20\.04/.test(os) ? 'focal'
+    : /jammy|22\.04/.test(os) ? 'jammy'
+    : /noble|24\.04/.test(os) ? 'noble'
+    : /bookworm|trixie|debian gnu\/linux 1[23]/.test(os) ? 'bookworm' : ''
   return [distro, arch].filter(Boolean).join('-')
 }
 

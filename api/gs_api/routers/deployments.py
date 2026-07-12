@@ -726,10 +726,13 @@ def _rig_abi(dev: dict) -> str:
     kern = (attrs.get("kernel") or "").lower()
     arch = "arm64" if ("aarch64" in kern or "arm64" in kern or "arm64" in osr) else            ("amd64" if ("x86_64" in kern or "amd64" in kern) else "")
     # distro family
+    # LSB codenames — must match the target registry abi_key (targets.bzl):
+    # focal/jammy/noble for Ubuntu, bookworm for Debian 12/trixie.
     if "focal" in osr or "20.04" in osr: distro = "focal"
+    elif "jammy" in osr or "22.04" in osr: distro = "jammy"
+    elif "noble" in osr or "24.04" in osr: distro = "noble"
     elif "bookworm" in osr or "debian gnu/linux 12" in osr: distro = "bookworm"
     elif "trixie" in osr or "debian gnu/linux 13" in osr: distro = "bookworm"  # trixie≈bookworm-arm64 build for now
-    elif "ubuntu" in osr and ("24" in osr): distro = "ubuntu24"
     else: distro = ""
     return f"{distro}-{arch}".strip("-")
 

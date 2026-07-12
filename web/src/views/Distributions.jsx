@@ -8,7 +8,10 @@ import { usePoll } from '../App'
 // panel deploys a prepared Distribution (Targets | Distributions).
 
 // derive the abi suffix from a runtime/app build key (…-bookworm-arm64 etc.)
-const ABIS = ['bookworm-arm64', 'focal-arm64', 'ubuntu24', 'amd64']
+// LSB-codenamed abis FIRST (most specific), bare arch LAST — abiOf takes the
+// first substring match, so 'noble-amd64' must precede 'amd64' or a noble
+// key falls through to bare amd64 (the label lost its LSB release).
+const ABIS = ['bookworm-arm64', 'focal-arm64', 'jammy-arm64', 'noble-amd64', 'ubuntu24', 'arm64', 'amd64']
 const abiOf = (key) => ABIS.find((x) => (key || '').includes(x)) || ''
 
 function NewDistDialog({ apps, runtimes, swpBuilds, onClose, onDone }) {
