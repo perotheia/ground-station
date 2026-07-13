@@ -567,10 +567,23 @@ def decommission(device_id: str) -> dict:
         raise HTTPException(status_code=409,
                             detail="device is pinned — unpin before deleting")
     try:
-        m.decommission_device(device_id)
+        # purge_device is robust to the accepted-orphan case: a plain
+        # decommission (async workflow) leaves an ACCEPTED auth-set with no live
+        # client on the active list, so the device "won't delete". purge rejects +
+        # deletes each auth-set too, and REPORTS whether it actually cleared.
+        result = m.purge_device(device_id)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"decommission: {e}")
-    return {"device_id": device_id, "decommissioned": True}
+    if result.get("still_present"):
+        # honest failure instead of a false success — a stuck record the operator
+        # (or a follow-up) needs to see, not a silent no-op.
+        raise HTTPException(
+            status_code=502,
+            detail=f"decommission incomplete — device {device_id} still on the "
+                   f"deviceauth list after purge (auth-sets cleared: "
+                   f"{result.get('auth_sets_cleared')}).")
+    return {"device_id": device_id, "decommissioned": True,
+            "auth_sets_cleared": result.get("auth_sets_cleared", [])}
 
 
 # ── Enrolment helpers (Create New Target modal) ──────────────────────────────

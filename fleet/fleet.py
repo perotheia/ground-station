@@ -298,6 +298,44 @@ class Mender:
             raise RuntimeError(f"decommission [{st}]: {data.decode(errors='replace')[:200]}")
         return True
 
+    def delete_auth_set(self, device_id: str, auth_set_id: str) -> bool:
+        """Delete ONE auth-set (deviceauth v2). Needed to purge an ACCEPTED orphan
+        that a plain decommission leaves behind: Mender's device DELETE is an async
+        workflow that does NOT remove an accepted auth-set with no live client, so
+        the device lingers on the active list. Reject-then-delete the auth-set drops
+        it. 404 = already gone (idempotent)."""
+        st, data, _ = self._req(
+            "DELETE",
+            f"/api/management/v2/devauth/devices/{device_id}/auth/{auth_set_id}")
+        if st not in (204, 200, 404):
+            raise RuntimeError(f"delete_auth_set [{st}]: {data.decode(errors='replace')[:200]}")
+        return True
+
+    def purge_device(self, device_id: str) -> dict:
+        """Fully remove a device from deviceauth — robust to the accepted-orphan
+        case. Steps: DELETE the device (enqueues decommission), then for EACH of
+        its auth-sets reject -> delete (so an accepted orphan with no client, which
+        the async decommission won't reap, still drops off the active list).
+        Idempotent; returns what it acted on. Raises only on a hard API error."""
+        # snapshot the auth-sets before we delete the device wrapper
+        auth_sets = []
+        for d in self.auth_devices():
+            if d.get("id") == device_id:
+                auth_sets = [a.get("id") for a in (d.get("auth_sets") or []) if a.get("id")]
+                break
+        self.decommission_device(device_id)      # async; may leave an accepted orphan
+        for aset in auth_sets:
+            try:
+                self.set_auth_status(device_id, aset, "rejected")
+            except Exception:  # noqa: BLE001
+                pass                              # already gone / not rejectable
+            self.delete_auth_set(device_id, aset)
+        # verify: is it still on the active deviceauth list?
+        still = any(d.get("id") == device_id and d.get("status") != "noauth"
+                    for d in self.auth_devices())
+        return {"device_id": device_id, "auth_sets_cleared": auth_sets,
+                "still_present": still}
+
     def assign_group(self, device_id: str, group: str) -> bool:
         """Put a device into a Mender group (the Connect optional step)."""
         st, data, _ = self._req(
