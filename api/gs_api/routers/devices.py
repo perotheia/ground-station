@@ -408,7 +408,10 @@ def set_verify_key(device_id: str, req: VerifyKeyRequest) -> dict:
     else:
         tags.pop("swp_verify_key", None)
     try:
-        m.set_tags(device_id, tags)
+        # tags is the COMPLETE operator-tag set (merged above, verify-key set or
+        # popped) — PUT-replace so a POPPED swp_verify_key actually clears. The
+        # default MERGE would re-read the live key and re-add it (clear = no-op).
+        m.set_tags(device_id, tags, replace=True)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"verify-key set: {e}")
     # MIRROR to the runtime provisioning plane so colony (which fetches from S3,
@@ -543,7 +546,12 @@ def pin(device_id: str, req: PinRequest) -> dict:
     if req.pinned:
         tags["pinned"] = "true"
     try:
-        m.set_tags(device_id, tags)
+        # tags is the COMPLETE final set (base-state re-merged above, pinned
+        # set/dropped) — PUT-replace so a DROPPED pinned actually clears. The
+        # Mender PUT .../tags removes attributes not provided (true replace); the
+        # default set_tags MERGE would re-read the live pinned tag and fold it
+        # back in, making unpin a silent no-op. See mender inventory mgmt API.
+        m.set_tags(device_id, tags, replace=True)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"pin: {e}")
     return {"device_id": device_id, "pinned": req.pinned}
