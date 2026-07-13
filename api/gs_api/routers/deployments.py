@@ -72,8 +72,18 @@ def list_deployments() -> dict:
 @router.get("/rollouts")
 def list_rollouts() -> dict:
     """Every named rollout entity on the package plane (theia-rollouts), newest
-    first is not tracked (no timestamps) — returned in bucket order."""
-    return {"plane": "rollouts", "rollouts": plane_client(settings()).rollouts_catalog()}
+    first is not tracked (no timestamps) — returned in bucket order. Each is
+    reconciled against live Mender state so `status` reflects finished phases."""
+    s = settings()
+    out = []
+    for ro in plane_client(s).rollouts_catalog():
+        if isinstance(ro, dict) and "_error" not in ro:
+            try:
+                ro = _reconcile_rollout(s, ro)
+            except Exception:  # noqa: BLE001
+                pass
+        out.append(ro)
+    return {"plane": "rollouts", "rollouts": out}
 
 
 def _rollout_sw_compare(s, doc: dict) -> list[dict]:
@@ -114,16 +124,67 @@ def _rollout_sw_compare(s, doc: dict) -> list[dict]:
     return out
 
 
+def _reconcile_rollout(s, doc: dict) -> dict:
+    """Advance a rollout's phase/overall status from the LIVE Mender deployment
+    state. A phase is stored `deploying` at launch and only an explicit `advance`
+    ever moved it — so a phase whose Mender deployment already FINISHED stayed
+    `deploying` and the rollout `in_progress` forever (a 1-phase rollout could
+    never reach `completed`). Here: for each `deploying` phase read its Mender
+    deployment; finished(no failures) → `done`, finished-with-failures → `failed`.
+    If no phase is still queued/deploying, the rollout is `completed` (or `failed`
+    if any phase failed). Persists only when something actually changed."""
+    phases = doc.get("phases", []) or []
+    if doc.get("status") in ("aborted", "completed"):
+        return doc
+    m = mender_client(s)
+    changed = False
+    for ph in phases:
+        if ph.get("status") != "deploying":
+            continue
+        dep_id = ph.get("deployment_id")
+        if not dep_id:
+            continue
+        try:
+            dep = m.deployment_status(dep_id)
+        except Exception:  # noqa: BLE001
+            continue                       # transient — leave as deploying
+        if dep.get("status") != "finished":
+            continue                       # still in flight
+        stats = (dep.get("statistics") or {})
+        st = stats.get("status", stats) if isinstance(stats, dict) else {}
+        failed = (st.get("failure", 0) or 0) + (st.get("aborted", 0) or 0)
+        ph["status"] = "failed" if failed else "done"
+        changed = True
+    if changed:
+        pending = [p for p in phases if p.get("status") in ("queued", "deploying")]
+        if any(p.get("status") == "failed" for p in phases) and not pending:
+            doc["status"] = "failed"
+        elif not pending:
+            doc["status"] = "completed"
+        else:
+            doc["status"] = "in_progress"
+        try:
+            plane_client(s).save_rollout(doc.get("name", ""), doc)
+        except Exception:  # noqa: BLE001
+            pass                           # best-effort; the reconciled view still returns
+    return doc
+
+
 @router.get("/rollouts/{name}")
 def get_rollout(name: str) -> dict:
     """A single named rollout entity (the live plan + status), plus a per-machine
     SW patch-compare (`sw`): each targeted board's installed current_version vs the
     rollout's to_version, so the operator sees which boards are already at target
-    and which are behind. Best-effort — `sw` is [] when com is unreachable."""
+    and which are behind. Best-effort — `sw` is [] when com is unreachable.
+
+    Reconciles phase/overall status from the live Mender deployment state first, so
+    a phase whose deployment finished flips deploying→done (and a 1-phase rollout
+    reaches `completed`) without an explicit advance."""
     s = settings()
     doc = plane_client(s).fetch_rollout(name)
     if not doc:
         raise HTTPException(status_code=404, detail=f"no rollout '{name}'")
+    doc = _reconcile_rollout(s, doc)
     doc["sw"] = _rollout_sw_compare(s, doc)
     return doc
 
