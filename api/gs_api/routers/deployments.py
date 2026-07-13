@@ -557,22 +557,30 @@ def create_rollout(req: RolloutRequest) -> dict:
         need = (swp.get("requires_runtime") or "").strip()
         blocked = []
         if need:
-            # requires_runtime is the SEMVER (0.3.0); a device's base_version is
-            # the ABI-KEYED runtime (0.3.0-jammy-arm64 / 0.3.0-noble-amd64). Match
-            # on the semver prefix, not the whole string — else a codenamed board
-            # never satisfies a bare-semver pin (blocks every rollout).
-            def _bv_semver(bv):
-                return (bv or "").split("-", 1)[0]
+            # Two-plane OTA version rule (theia docs/design/two-plane-ota.md): an SWP
+            # is coupled to the runtime at the MAJOR.MINOR level, not the patch. A
+            # runtime PATCH (0.3.0 → 0.3.2) is a no-interface binary swap — it must
+            # NOT invalidate an SWP pinned to 0.3.0 (the planes are independent on
+            # patch). A runtime MINOR change IS an interface change, which forces a
+            # new SWP major; that's what this gate enforces. So compare major.minor:
+            # the device's runtime minor must equal the SWP's requires_runtime minor.
+            # requires_runtime + base_version are both abi-keyed (0.3.0-noble-amd64);
+            # take the semver prefix, then major.minor.
+            def _mm(v):
+                sv = (v or "").split("-", 1)[0]        # drop the abi suffix
+                parts = sv.split(".")
+                return ".".join(parts[:2]) if len(parts) >= 2 else sv
+            need_mm = _mm(need)
             inv = {did: _device_base_version(m, did) for did in devices}
-            ok_devices = [did for did in devices if _bv_semver(inv.get(did)) == need]
+            ok_devices = [did for did in devices if _mm(inv.get(did)) == need_mm]
             blocked = [{"device": did, "base_version": inv.get(did)}
-                       for did in devices if _bv_semver(inv.get(did)) != need]
+                       for did in devices if _mm(inv.get(did)) != need_mm]
             devices = ok_devices
         if not devices:
             raise HTTPException(
                 status_code=409,
                 detail=(f"runtime-incompatible: {req.app} {req.to_version} needs "
-                        f"base '{need}', but no targeted device runs it. Update the "
+                        f"base '{need}', but no targeted device runs its major.minor. A runtime PATCH is fine; a MINOR change needs the base updated (colony) first. Update the "
                         f"base (colony) first. Blocked: {blocked}"))
         chunks = _chunk(devices, req.phases)
         plan = [{"phase": i + 1, "devices": c, "count": len(c),
