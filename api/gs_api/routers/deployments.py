@@ -899,9 +899,29 @@ def deploy_distribution(req: DistDeployRequest) -> dict:
                 try: m.set_tags(a.device_id, {"local_ip": ip, "base_version": role["runtime_build"]})
                 except Exception: pass  # noqa: BLE001
             step["base"] = role["runtime_build"]; step["colony_id"] = dep.get("id")
+            # SERIALIZE the planes: the runtime (colony) writes the release +
+            # its config/executor.json, and the app SWP FLIPS `current` to a new
+            # release. If Mender picks up the SWP before colony finishes, the flip
+            # races the config write (the runtime release can end up with an empty
+            # config → a rollback has no executor). Wait for the colony orchestrate
+            # to FINISH before creating the Mender deployment. Best-effort: on a
+            # colony error or timeout, still fire the SWP (the on-device runtime
+            # gate then holds it until the runtime deb lands).
+            import time as _t
+            _dl = _t.time() + 600
+            _cid = dep.get("id")
+            while _cid and _t.time() < _dl:
+                _d = colony_client(s).deployment(_cid)
+                if _d.get("status") == "finished":
+                    _st = (_d.get("statistics") or {}).get("status", {})
+                    step["base_ok"] = bool(_st.get("success", 0)) and not _st.get("failure", 0)
+                    break
+                _t.sleep(3)
         except Exception as e:  # noqa: BLE001
             step["base_error"] = str(e)
-        # 2) SWP: the role's swp_build via Mender (to this one device)
+        # 2) SWP: the role's swp_build via Mender (to this one device). Fired only
+        #    AFTER the colony orchestrate above finished, so the flip never races
+        #    the runtime release's config write.
         swp_build = role.get("swp_build") or role.get("app_build")
         if swp_build:
             try:
