@@ -496,10 +496,16 @@ def create_rollout(req: RolloutRequest) -> dict:
         need = (swp.get("requires_runtime") or "").strip()
         blocked = []
         if need:
+            # requires_runtime is the SEMVER (0.3.0); a device's base_version is
+            # the ABI-KEYED runtime (0.3.0-jammy-arm64 / 0.3.0-noble-amd64). Match
+            # on the semver prefix, not the whole string — else a codenamed board
+            # never satisfies a bare-semver pin (blocks every rollout).
+            def _bv_semver(bv):
+                return (bv or "").split("-", 1)[0]
             inv = {did: _device_base_version(m, did) for did in devices}
-            ok_devices = [did for did in devices if inv.get(did) == need]
+            ok_devices = [did for did in devices if _bv_semver(inv.get(did)) == need]
             blocked = [{"device": did, "base_version": inv.get(did)}
-                       for did in devices if inv.get(did) != need]
+                       for did in devices if _bv_semver(inv.get(did)) != need]
             devices = ok_devices
         if not devices:
             raise HTTPException(
