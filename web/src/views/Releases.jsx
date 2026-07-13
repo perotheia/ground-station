@@ -130,7 +130,7 @@ export function Releases() {
 
       {/* App plane (distributions) + their pinned runtime */}
       <div className="pane">
-        <div className="pane-head"><span className="badge bg-cyan-500/15 text-cyan-300 mr-2">app</span>Distributions</div>
+        <div className="pane-head"><span className="badge bg-cyan-500/15 text-cyan-300 mr-2">app</span>Applications</div>
         <div className="flex-1 overflow-auto">
           <table className="w-full">
             <thead className="sticky top-0 bg-sidebar/60">
