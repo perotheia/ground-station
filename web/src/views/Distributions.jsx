@@ -90,7 +90,9 @@ export function Distributions() {
   const { data: appData } = usePoll(() => api.appsPlane(), [], 15000)
   const { data: rtData } = usePoll(() => api.runtimePlane(), [], 15000)
   const [showNew, setShowNew] = useState(false)
+  const [sel, setSel] = useState(null)                 // "name/version" → detail panel
   const dists = (data?.distributions || []).filter((d) => !d._error)
+  const selDist = dists.find((d) => `${d.name}/${d.version}` === sel)
 
   const apps = useMemo(() => {
     const out = []
@@ -118,8 +120,12 @@ export function Distributions() {
           </thead>
           <tbody className="divide-y divide-edge/40">
             {dists.length === 0 && <tr><td className="cell text-muted" colSpan={5}>no distributions — prepare one from a runtime + app</td></tr>}
-            {dists.map((d) => (
-              <tr key={`${d.name}/${d.version}`} className="hover:bg-edge/20">
+            {dists.map((d) => {
+              const k = `${d.name}/${d.version}`
+              return (
+              <tr key={k}
+                  onClick={() => setSel(sel === k ? null : k)}
+                  className={`cursor-pointer hover:bg-edge/20 ${sel === k ? 'row-sel' : ''}`}>
                 <td className="cell text-sm">{d.name}</td>
                 <td className="cell font-mono text-xs">{d.version}</td>
                 <td className="cell text-xs"><span className="badge bg-amber-500/15 text-amber-300">/{d.arity || (d.roles?.length || 1)}</span></td>
@@ -129,13 +135,45 @@ export function Distributions() {
                       <span className="text-muted"> · {r.abi} · {r.runtime_build}{(r.swp_build || r.app_build) ? ` · ${r.swp_build || r.app_build}` : ''}</span></div>
                   ))}
                 </td>
-                <td className="cell text-right">
+                <td className="cell text-right" onClick={(e) => e.stopPropagation()}>
                   <button className="icon-btn" title="delete" style={{ color: '#E57373' }} onClick={() => del(d)}>🗑</button>
                 </td>
               </tr>
-            ))}
+            )})}
           </tbody>
         </table>
+      </div>
+      {/* Detail panel — full breakdown of the selected distribution (role
+          assignments, per-role base runtime + app build, abi). Select a row to
+          open; click it again to close. */}
+      <div className="border-t border-edge bg-sidebar/30 p-3 text-xs">
+        {!selDist
+          ? <div className="text-muted">Select a distribution to see its role assignments.</div>
+          : <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-100 text-sm">{selDist.name}</span>
+                <span className="font-mono text-slate-300">{selDist.version}</span>
+                <span className="badge bg-amber-500/15 text-amber-300">arity {selDist.arity || (selDist.roles?.length || 1)}</span>
+              </div>
+              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                <div className="text-muted uppercase tracking-wide col-span-2 mt-1">Role assignments</div>
+                {(selDist.roles || []).map((r) => (
+                  <React.Fragment key={r.role}>
+                    <div className="font-semibold text-slate-200">{r.role}
+                      <span className="text-muted font-normal"> · {r.abi || 'any'}</span></div>
+                    <div className="font-mono text-[11px]">
+                      <span className="text-violet-300" title="base runtime build">{r.runtime_build || '—'}</span>
+                      <span className="text-muted"> + </span>
+                      <span className="text-cyan-300" title="app (SWP) build">{r.swp_build || r.app_build || '— (base-only)'}</span>
+                    </div>
+                  </React.Fragment>
+                ))}
+              </div>
+              <div className="text-[11px] text-muted pt-1">
+                A machine is deploy-compatible with a role iff its probed abi == the role abi.
+                Deploy this distribution from the Deployment tab.
+              </div>
+            </div>}
       </div>
       {showNew && <NewDistDialog apps={apps} runtimes={runtimes} swpBuilds={swpBuilds}
         onClose={() => setShowNew(false)} onDone={() => { setShowNew(false); refresh() }} />}

@@ -334,13 +334,14 @@ export function Rollouts() {
             {deps.map((d) => {
               const done = ['finished', 'aborted'].includes(d.status)
               return (
-                <tr key={d.id} className="hover:bg-edge/20">
+                <tr key={d.id}
+                    onClick={() => setSel(sel === d.id ? null : d.id)}
+                    className={`cursor-pointer hover:bg-edge/20 ${sel === d.id ? 'row-sel' : ''}`}>
                   <td className="cell text-sm">{d.name}</td>
                   <td className="cell"><span className="badge bg-slate-500/15 text-slate-300">{d.artifact_name}</span></td>
                   <td className="cell text-xs">{d.status}</td>
                   <td className="cell">{bar(d.statistics?.status || d.statistics)}</td>
-                  <td className="cell text-right whitespace-nowrap">
-                    <button className="btn-ghost text-xs" onClick={() => setSel(d.id)}>Detail</button>
+                  <td className="cell text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <button className="icon-btn" title={done ? 'finished' : 'abort'}
                             disabled={done || busyAbort === d.id}
                             style={{ color: done ? '#5a6b7d' : '#E57373' }}
