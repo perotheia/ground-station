@@ -300,7 +300,31 @@ def deploy_base(req: BaseDeployRequest) -> dict:
     if req.kind == "cleanup" and req.scope is not None:
         extra = {f"clean_{k}": bool(v) for k, v in req.scope.items()
                  if k in ("app", "runtime", "mender")}
-    dep = col.create(req.rig, req.kind, req.schedule, host=req.ip, extra=extra)
+        # colony registry-free needs a role even for cleanup; it is role-agnostic
+        # (the clean_* flags don't depend on the manifest slice) — default master.
+        extra["role"] = "master"
+    # Resolve the host: the explicit ip, else the device's reachable_ip from Mender
+    # inventory. colony is registry-free — without a host it 404s "no rig in the
+    # registry", which otherwise bubbles up as a raw 500 (the GS UI then chokes on
+    # the non-JSON body: "Unexpected token 'I', Internal S...").
+    host = req.ip
+    if not host and req.device_id:
+        try:
+            dev = next((d for d in mender_client(s).devices()
+                        if d.get("id") == req.device_id), None)
+            if dev:
+                host = _flatten(dev).get("reachable_ip")
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        dep = col.create(req.rig, req.kind, req.schedule, host=host, extra=extra)
+    except Exception as e:  # noqa: BLE001
+        # Turn a colony error (404 no-rig / no-host, connection refused, …) into a
+        # clean JSON 502 so the GS UI shows a message instead of failing JSON.parse.
+        raise HTTPException(status_code=502,
+            detail=f"colony {req.kind} '{req.rig}' failed: {e}"
+                   + ("" if host else " (no reachable IP for the device — "
+                      "pass an IP or add the device to the VPN)"))
     did = dep["id"]
     if req.schedule:          # future-dated → don't block; mirror later
         return {"deployment": dep, "mirrored": False, "note": "scheduled; mirror on finish"}

@@ -6,9 +6,17 @@ async function call(path, opts = {}) {
     ...opts,
   })
   const text = await res.text()
-  const body = text ? JSON.parse(text) : null
+  // Parse defensively: a 500 (or any non-JSON error) returns a plain-text body
+  // like "Internal Server Error" — JSON.parse would throw "Unexpected token 'I'"
+  // BEFORE we reach the !res.ok branch, masking the real status. Keep the raw
+  // text as the fallback message.
+  let body = null
+  if (text) {
+    try { body = JSON.parse(text) } catch { body = text }
+  }
   if (!res.ok) {
-    const msg = body?.detail || `${res.status} ${res.statusText}`
+    const msg = (body && body.detail) || (typeof body === 'string' && body)
+      || `${res.status} ${res.statusText}`
     throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
   }
   return body
