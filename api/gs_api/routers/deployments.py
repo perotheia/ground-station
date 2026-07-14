@@ -348,7 +348,12 @@ def deploy_base(req: BaseDeployRequest) -> dict:
         # mender-update inventory submit; we can't clear it from here.)
         try:
             m = mender_client(s)
-            dev = _mender_device_for_rig(s, m, req.rig)
+            # Prefer the explicit device_id (exact); fall back to rig-name match.
+            dev = None
+            if req.device_id:
+                dev = next((d for d in m.devices() if d.get("id") == req.device_id), None)
+            if not dev:
+                dev = _mender_device_for_rig(s, m, req.rig)
             if dev:
                 # read the RAW tags (scope=tags); drop ONLY the base-state keys
                 # colony mirrored, keep every other operator tag verbatim
