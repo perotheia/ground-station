@@ -248,13 +248,20 @@ class Mender:
             raise RuntimeError(f"auth_devices [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"[]")
 
-    def find_by_mac(self, mac: str) -> dict | None:
-        """The device auth-set whose identity_data.mac matches (the board's MAC is
-        our stable handle for Connect — it survives a provides/store reset)."""
+    def find_by_identity(self, ident: str) -> dict | None:
+        """The device auth-set whose identity matches `ident`. Identity is the
+        board's stable handle for Connect: a `device_id` (the current UUID/name
+        design). A MAC was the OLD identity — matched only as a legacy fallback
+        (containers + UUID-identity boards report device_id, no mac)."""
         for d in self.auth_devices():
-            if (d.get("identity_data") or {}).get("mac") == mac:
+            idd = d.get("identity_data") or {}
+            if idd.get("device_id") == ident or idd.get("mac") == ident:
                 return d
         return None
+
+    # Back-compat alias — the old name; identity is device_id now, not mac.
+    def find_by_mac(self, mac: str) -> dict | None:
+        return self.find_by_identity(mac)
 
     def accept_device(self, device_id: str, auth_set_id: str) -> bool:
         """Accept a pending auth-set → the device becomes deployable (Mender 'sees'

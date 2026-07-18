@@ -454,7 +454,10 @@ def pending() -> dict:
 
 
 class ConnectRequest(BaseModel):
-    mac: str
+    identity: str | None = None     # the board's identity (device_id — the UUID/
+                                    # name design). The stable Connect handle.
+    mac: str | None = None          # LEGACY alias for identity (MAC was the old
+                                    # identity); use `identity` for new callers.
     fleet: str | None = None        # expected device_type (compatibility class)
     group: str | None = None        # optional Mender group
     name: str | None = None         # operator-assigned display name (Mender tag)
@@ -467,18 +470,22 @@ def connect(req: ConnectRequest) -> dict:
     self-publishes over TIPC, so we verify rather than register."""
     s = settings()
     m = mender_client(s)
-    # ── Mender-half: accept the pending auth-set by MAC ──────────────────────
-    dev = m.find_by_mac(req.mac)
+    ident = req.identity or req.mac
+    if not ident:
+        raise HTTPException(status_code=422,
+                            detail="connect needs `identity` (the board device_id)")
+    # ── Mender-half: accept the pending auth-set by IDENTITY (device_id) ──────
+    dev = m.find_by_identity(ident)
     if not dev:
         raise HTTPException(status_code=404,
-                            detail=f"no Mender device with mac {req.mac} "
+                            detail=f"no Mender device with identity {ident!r} "
                                    "(is the board's mender client checking in?)")
     if dev.get("status") != "accepted":
         auth_sets = dev.get("auth_sets") or []
         pend = next((a for a in auth_sets if a.get("status") == "pending"), None)
         if not pend:
             raise HTTPException(status_code=409,
-                                detail=f"device {req.mac} has no pending auth-set "
+                                detail=f"device {ident!r} has no pending auth-set "
                                        f"(status={dev.get('status')})")
         m.accept_device(dev["id"], pend["id"])
         accepted = True
@@ -501,6 +508,7 @@ def connect(req: ConnectRequest) -> dict:
     # ── com-half: is the board present in the Observability cluster? ─────────
     observed = _observed()
     return {
+        "identity": ident,
         "mac": req.mac,
         "device_id": dev["id"],
         "mender": {"accepted": True, "newly_accepted": accepted,
