@@ -47,17 +47,22 @@ def _scalar(v):
 def _flatten(dev: dict) -> dict:
     """Mender device → a flat record the UI renders directly."""
     attrs = {a["name"]: _scalar(a["value"]) for a in dev.get("attributes", []) or []}
-    # STABLE IDENTITY = the MAC (Mender identity_data — immutable, survives
-    # re-enrol). device_id (the UUID) rotates on decommission, so GS keys on MAC.
+    # STABLE IDENTITY = the device_id (the UUID/name in Mender identity_data —
+    # the current design). MAC is a LEGACY identity kept as a display/fallback
+    # only (older rigs enrolled by MAC; a UUID-identity rig reports mac=null).
     idd = dev.get("identity_data") or {}
-    mac = idd.get("mac") if isinstance(idd, dict) else None
+    idd = idd if isinstance(idd, dict) else {}
+    device_id = idd.get("device_id")
+    mac = idd.get("mac")
+    identity = device_id or mac              # the stable handle GS keys on
     return {
         "id": dev.get("id"),                 # server UUID (rotates — display only)
-        "mac": mac,                          # the STABLE identity
+        "identity": identity,                # the STABLE identity (device_id, or MAC on legacy rigs)
+        "mac": mac,                          # legacy identity (null on a UUID-identity rig)
         "updated_ts": dev.get("updated_ts"),
-        # DISPLAY NAME: operator-assigned tag (set at Connect, keyed on the MAC →
-        # same in GS + Mender, survives re-enrol) → hostname → the MAC.
-        "name": attrs.get("name") or attrs.get("hostname") or mac,
+        # DISPLAY NAME: operator-assigned tag (set at Connect) → hostname →
+        # the device_id → the MAC. Never blank for a UUID-identity rig.
+        "name": attrs.get("name") or attrs.get("hostname") or device_id or mac,
         # the hardware-capability fleet (Mender device_type) — our <fleet> key
         "fleet": attrs.get("device_type"),
         "group": attrs.get("group"),
@@ -119,10 +124,14 @@ def list_devices(group: str | None = Query(default=None),
         if group_ids is not None and a.get("id") not in group_ids:
             continue
         inv = inv_by_id.get(a.get("id"))
+        _idd = (a.get("identity_data") or {})
+        _did = _idd.get("device_id")
+        _mac = _idd.get("mac")
         d = _flatten(inv) if inv else {
             "id": a.get("id"),
-            "mac": (a.get("identity_data") or {}).get("mac"),
-            "name": (a.get("identity_data") or {}).get("mac"),
+            "identity": _did or _mac,
+            "mac": _mac,
+            "name": _did or _mac,
             "fleet": None, "group": None, "attributes": {},
         }
         d["auth_status"] = st                   # accepted|pending|preauthorized|rejected
@@ -440,7 +449,7 @@ def set_verify_key(device_id: str, req: VerifyKeyRequest) -> dict:
 @router.get("/pending")
 def pending() -> dict:
     """Boards Mender knows but hasn't accepted yet (auth-set status=pending) — the
-    Connect candidates. Keyed by MAC (the stable Connect handle)."""
+    Connect candidates. Keyed by device_id identity (MAC on legacy rigs)."""
     s = settings()
     try:
         auth = mender_client(s).auth_devices()
@@ -448,6 +457,7 @@ def pending() -> dict:
         raise HTTPException(status_code=502, detail=f"mender devauth: {e}")
     out = [{"id": d["id"], "status": d.get("status"),
             "mac": (d.get("identity_data") or {}).get("mac"),
+            "device_id": (d.get("identity_data") or {}).get("device_id"),
             "identity": d.get("identity_data")}
            for d in auth if d.get("status") == "pending"]
     return {"pending": out, "count": len(out)}
@@ -465,8 +475,8 @@ class ConnectRequest(BaseModel):
 
 @router.post("/connect", dependencies=[Depends(_require_key)])
 def connect(req: ConnectRequest) -> dict:
-    """Onboard a board: ACCEPT its pending Mender auth-set (by MAC) + confirm it is
-    present in the Observability cluster. The com-half is observational — a board
+    """Onboard a board: ACCEPT its pending Mender auth-set (by device_id identity;
+    MAC on legacy rigs) + confirm it is present in the Observability cluster. The com-half is observational — a board
     self-publishes over TIPC, so we verify rather than register."""
     s = settings()
     m = mender_client(s)
