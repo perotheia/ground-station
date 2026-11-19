@@ -23,7 +23,7 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/api/pki", tags=["pki"])
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
-_ROLES = ("rig", "gs")
+_ROLES = ("rig", "gs", "operator")   # operator: a person's client certificate (supervisor-gui, rtdb), 30 days
 FLEET_DNS = "fleet.theia"
 
 
@@ -120,6 +120,8 @@ def sign(req: SignRequest) -> dict:
     ca_key, ca_cert = _load_ca()
     now = dt.datetime.now(dt.timezone.utc)
     days = int(os.environ.get("GS_PKI_DAYS", "90"))
+    if req.role == "operator":
+        days = min(days, int(os.environ.get("GS_PKI_OPERATOR_DAYS", "30")))
     # the subject is OURS (never copied from the CSR): CN, O, OU = role
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, req.device_id),
                          x509.NameAttribute(NameOID.ORGANIZATION_NAME, "perotheia fleet"),
