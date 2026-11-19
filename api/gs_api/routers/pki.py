@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api/pki", tags=["pki"])
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 _ROLES = ("rig", "gs")
+FLEET_DNS = "fleet.theia"
 
 
 def _dir() -> Path:
@@ -135,7 +136,10 @@ def sign(req: SignRequest) -> dict:
                                                   ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             .add_extension(x509.SubjectAlternativeName([
                 x509.UniformResourceIdentifier(f"theia:{req.role}:{req.device_id}"),
-                x509.DNSName(req.device_id)]), critical=False)
+                x509.DNSName(req.device_id),
+                # the fleet-wide role name: a client that reaches a rig by ADDRESS verifies the chain to the
+                # fleet CA and this name ("a rig of this fleet"); which rig = the CN / URI.
+                x509.DNSName(f"{req.role}.{FLEET_DNS}")]), critical=False)
             .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
                            critical=False)
             .sign(ca_key, hashes.SHA256()))
@@ -145,3 +149,32 @@ def sign(req: SignRequest) -> dict:
         f.write(json.dumps(row) + "\n")
     return {"cert_pem": cert.public_bytes(serialization.Encoding.PEM).decode(),
             "ca_pem": ca_cert.public_bytes(serialization.Encoding.PEM).decode(), **row}
+
+
+def gs_client_identity() -> tuple[bytes, bytes, bytes]:
+    """(ca_pem, key_pem, cert_pem) of the ground station's OWN client certificate (CN fleet-gs, role gs),
+    created on first use and renewed when it has under 15 days left. gs-api presents it to a rig's com."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    d = _dir()
+    kf, cf = d / "gs-client.key", d / "gs-client.crt"
+    fresh = False
+    if kf.exists() and cf.exists():
+        c = x509.load_pem_x509_certificate(cf.read_bytes())
+        fresh = c.not_valid_after_utc - dt.datetime.now(dt.timezone.utc) > dt.timedelta(days=15)
+    if not fresh:
+        key = ec.generate_private_key(ec.SECP256R1())
+        csr = (x509.CertificateSigningRequestBuilder()
+               .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "fleet-gs")]))
+               .sign(key, hashes.SHA256()))
+        r = sign(SignRequest(device_id="fleet-gs", role="gs",
+                             csr_pem=csr.public_bytes(serialization.Encoding.PEM).decode()))
+        fd = os.open(kf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                      serialization.NoEncryption()))
+        cf.write_text(r["cert_pem"])
+    _, ca_cert = _load_ca()
+    return (ca_cert.public_bytes(serialization.Encoding.PEM), kf.read_bytes(), cf.read_bytes())

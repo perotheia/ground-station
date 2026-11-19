@@ -146,12 +146,24 @@ def sw_state(target: str, timeout: float = 6.0) -> list[dict]:
 
 
 def _channel(target: str):
+    """A channel to a rig's com. DEFAULT = mutual TLS with the fleet PKI: the rig's certificate must chain to
+    the fleet CA and carry the fleet rig name; the GS presents its own client certificate (CN fleet-gs).
+    Plaintext only with GS_COM_INSECURE=1 (a debug rig started with THEIA_COM_INSECURE=1): never by default,
+    never as a fallback."""
     import grpc  # noqa: PLC0415
-    ca = os.environ.get("THEIA_COM_TLS_CA")
+    if os.environ.get("GS_COM_INSECURE", "0") == "1":
+        return grpc.insecure_channel(target)
+    if os.environ.get("GS_PKI_DIR"):
+        from .routers.pki import FLEET_DNS, gs_client_identity  # noqa: PLC0415
+        ca, key, cert = gs_client_identity()
+        creds = grpc.ssl_channel_credentials(root_certificates=ca, private_key=key, certificate_chain=cert)
+        return grpc.secure_channel(target, creds,
+                                   options=(("grpc.ssl_target_name_override", f"rig.{FLEET_DNS}"),))
+    ca = os.environ.get("THEIA_COM_TLS_CA")          # a dev box with `theia manifest` certs
     if ca and Path(ca).is_file():
-        creds = grpc.ssl_channel_credentials(Path(ca).read_bytes())
-        return grpc.secure_channel(target, creds)
-    return grpc.insecure_channel(target)
+        return grpc.secure_channel(target, grpc.ssl_channel_credentials(Path(ca).read_bytes()))
+    raise RuntimeError("no fleet PKI (GS_PKI_DIR) and no THEIA_COM_TLS_CA: refusing a plaintext channel to a rig "
+                       "(GS_COM_INSECURE=1 for a debug rig)")
 
 
 # UcmState ordinal → name (mirrors system_services_ucm.UcmState).
