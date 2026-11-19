@@ -229,10 +229,32 @@ def rolled_back_to(log: str) -> str | None:
     return hit.group(1) if hit else None
 
 
+# device-log lines that say nothing about WHY an update failed
+_LOG_NOISE = ("Sending status update", "Running mender-update", "Deployment with ID",
+              "Installing artifact", "theia-swp: no ", "supervisor restarted")
+_LOG_PREFIX_RE = re.compile(r"^\d{4}-\d\d-\d\d \S+ [+-]\d{4} \S+ ")
+_LOG_MEANINGFUL_RE = re.compile(r"^error:|FAILED|ROLLBACK|refus|denied|mismatch")
+
+
+def failure_lines(log: str, n: int = 4) -> list[str]:
+    """The last `n` meaningful lines of a device update log (errors, the update module's stderr, the
+    commit-gate verdict, the rollback), timestamps and the 'Update Module output' wrapper dropped,
+    redacted. Falls back to the last non-noise lines when nothing stands out."""
+    lines = []
+    for raw in redact_log(log).splitlines():
+        ln = _LOG_PREFIX_RE.sub("", raw.strip())
+        ln = re.sub(r"^(info|error|warning): Update Module output \((stdout|stderr)\): ",
+                    lambda mm: "error: " if mm.group(2) == "stderr" else "", ln)
+        if ln and not any(x in ln for x in _LOG_NOISE):
+            lines.append(ln[:300])
+    hits = [ln for ln in lines if _LOG_MEANINGFUL_RE.search(ln)]
+    return (hits or lines)[-n:]
+
+
 def deployment_device_list(m, dep_id: str) -> list[dict]:
     """The devices of a Mender deployment ([{id, status, log, ...}]), cached when final.
     A FAILED device with a log also gets `rolled_back_to` (the release theia-swp
-    restored), read once from its log."""
+    restored) and `reason` (the last meaningful log lines, redacted), read once from its log."""
     hit = _device_list_cache.get(dep_id)
     if hit is not None:
         return hit
@@ -241,7 +263,9 @@ def deployment_device_list(m, dep_id: str) -> list[dict]:
     for r in rows:
         if r.get("status") == "failure" and r.get("log"):
             try:
-                r["rolled_back_to"] = rolled_back_to(m.deployment_device_log(dep_id, r.get("id")))
+                log = m.deployment_device_log(dep_id, r.get("id"))
+                r["rolled_back_to"] = rolled_back_to(log)
+                r["reason"] = failure_lines(log)
             except Exception:  # noqa: BLE001
                 complete = False          # read the log again next time
     if complete and rows and all(r.get("status") in _DEVICE_TERMINAL for r in rows):
@@ -273,6 +297,160 @@ def deployment_device_log(dep_id: str, device_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502,
                             detail=f"mender device log {dep_id}/{device_id}: {e}")
+
+
+# ── APP rollout: one artifact to chosen devices (spec hil-app-ota G2c/G3) ─────
+_IN_FLIGHT = {"pending", "downloading", "installing", "rebooting", "pause_before_installing",
+              "pause_before_committing", "pause_before_rebooting"}
+_ROLLOUT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:+-]{0,99}$")
+
+
+def _device_outcome(r: dict) -> str:
+    """success | rolled_back | failure | aborted | in_progress, for one device row."""
+    st = r.get("status") or "pending"
+    if st in ("success", "already-installed"):
+        return "success"
+    if st == "failure":
+        return "rolled_back" if r.get("rolled_back_to") else "failure"
+    if st == "aborted":
+        return "aborted"
+    if st in ("noartifact", "decommissioned"):
+        return "failure"
+    return "in_progress"
+
+
+def _target_ids(dep: dict) -> list[str]:
+    """The device ids a deployment was created for (its filter's `id $in` term)."""
+    for t in ((dep.get("filter") or {}).get("terms") or []):
+        if t.get("attribute") == "id" and isinstance(t.get("value"), list):
+            return [str(v) for v in t["value"]]
+    return []
+
+
+class AppRolloutRequest(BaseModel):
+    artifact_name: str               # a Mender artifact (GET /api/artifacts)
+    devices: list[str]               # Mender device ids (or Fleet names); one device = HIL
+    name: str | None = None          # the deployment name; default gs-ui:<artifact>:<devices>
+
+
+@router.post("/app", status_code=201, dependencies=[Depends(require_key)])
+def create_app_rollout(req: AppRolloutRequest) -> dict:
+    """Roll out ONE Mender artifact to the chosen devices (the HIL path: one device). Checks before
+    Mender: the artifact exists, every device is an accepted Mender device of a compatible device type,
+    and (G3) an app SWP's required runtime is the one each device's base runtime provides (the
+    base_version from the Fleet data) — 422 with the reason otherwise. An UNSIGNED artifact is
+    allowed (the rig refuses it); the answer says `signed: false`."""
+    from fastapi import Response
+    from . import rigs
+    from .artifacts import list_summaries, runtime_refusal
+    s = settings()
+    m = mender_client(s)
+    if not req.artifact_name.strip():
+        raise HTTPException(status_code=422, detail="artifact_name: required")
+    want = list(dict.fromkeys(d.strip() for d in req.devices if d and d.strip()))
+    if not want:
+        raise HTTPException(status_code=422, detail="devices: pick at least one target device")
+    if len(want) > 100:
+        raise HTTPException(status_code=422, detail="devices: at most 100 per rollout")
+    if req.name is not None and not _ROLLOUT_NAME_RE.match(req.name):
+        raise HTTPException(status_code=422,
+                            detail="name: letters, digits, space and . _ : + - only, up to 100")
+    try:
+        arts = [a for a in list_summaries(m) if a["name"] == req.artifact_name]
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"mender artifacts: {e}")
+    if not arts:
+        raise HTTPException(status_code=404, detail=f"no artifact '{req.artifact_name}' on the Mender server")
+    art = arts[0]
+    dev_types = {t for a in arts for t in a["device_types"]}
+    signed = all(a["signed"] for a in arts)
+
+    rows = [r for r in rigs.fleet(Response(), com=False) if r.get("mender_id")]
+    by_id = {r["mender_id"]: r for r in rows}
+    by_name = {r["name"]: r for r in rows}
+    try:
+        inv = {d.get("id"): d for d in m.devices()}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"mender inventory: {e}")
+    from ..clients import _attr_raw
+    targets, refused = [], []
+    for d in want:
+        row = by_id.get(d) or by_name.get(d)
+        if not row:
+            raise HTTPException(status_code=422, detail=f"device '{d}': not a Mender device in the fleet")
+        if row.get("auth_status") != "accepted":
+            raise HTTPException(status_code=422,
+                                detail=f"device {row['name']}: not accepted in Mender ({row.get('auth_status')})")
+        dt = _attr_raw(inv.get(row["mender_id"]) or {}, "device_type")
+        dts = {str(x) for x in (dt if isinstance(dt, list) else [dt]) if x}
+        if dev_types and dts and not (dts & dev_types):
+            raise HTTPException(status_code=422,
+                                detail=(f"device {row['name']} is device type {', '.join(sorted(dts))}; "
+                                        f"{req.artifact_name} is for {', '.join(sorted(dev_types))}"))
+        why = runtime_refusal(art, row["name"], row.get("base_version"))
+        if why:
+            refused.append(why)
+        targets.append(row)
+    if refused:
+        raise HTTPException(status_code=422, detail="runtime mismatch: " + "; ".join(refused))
+    ids = [r["mender_id"] for r in targets]
+    names = [r["name"] for r in targets]
+    name = req.name or f"gs-ui:{req.artifact_name}:{'+'.join(names)}"[:100]
+    try:
+        dep_id = m.create_deployment(name, req.artifact_name, ids)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"create deployment: {e}")
+    return {"id": dep_id, "name": name, "artifact_name": req.artifact_name, "kind": art["kind"],
+            "signed": signed, "devices": [{"id": i, "name": n} for i, n in zip(ids, names)]}
+
+
+@router.get("/{dep_id}/outcome")
+def deployment_outcome(dep_id: str) -> dict:
+    """A deployment's per-device progress + outcome, for the Rollout detail (polled): each target
+    device with its Mender status and outcome — success / rolled_back (to `rolled_back_to`) / failure
+    (`reason`: the last meaningful lines of its update log, redacted) / in_progress. A target that has
+    not checked in yet is `pending`. `final` = nothing will change any more."""
+    s = settings()
+    m = mender_client(s)
+    try:
+        dep = m.deployment_status(dep_id)
+        rows = deployment_device_list(m, dep_id)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"mender deployment {dep_id}: {e}")
+    names: dict[str, str] = {}
+    try:
+        for d in m.devices():
+            f = _flatten(d)
+            names[d.get("id")] = f.get("name") or d.get("id")
+    except Exception:  # noqa: BLE001
+        pass                                   # names are cosmetic
+    seen = {r.get("id") for r in rows}
+    devs = []
+    for r in list(rows) + [{"id": i, "status": "pending"} for i in _target_ids(dep) if i not in seen]:
+        st = r.get("status") or "pending"
+        devs.append({"id": r.get("id"), "name": names.get(r.get("id"), r.get("id")), "status": st,
+                     "outcome": _device_outcome(r), "rolled_back_to": r.get("rolled_back_to"),
+                     "reason": r.get("reason") or [], "started": r.get("started"),
+                     "finished": r.get("finished")})
+    outs = [d["outcome"] for d in devs]
+    dep_done = dep.get("status") in ("finished", "aborted")
+    if not dep_done or "in_progress" in outs:
+        overall = "in_progress"
+    elif not devs:
+        overall = "aborted" if dep.get("status") == "aborted" else "failure"
+    elif all(o == "success" for o in outs):
+        overall = "success"
+    elif "failure" in outs:
+        overall = "failure"
+    elif "rolled_back" in outs:
+        overall = "rolled_back"
+    else:
+        overall = outs[0]
+    stats = dep.get("statistics") or {}
+    return {"id": dep_id, "name": dep.get("name"), "artifact_name": dep.get("artifact_name"),
+            "status": dep.get("status"), "created": dep.get("created"), "finished": dep.get("finished"),
+            "statistics": stats.get("status", stats) if isinstance(stats, dict) else {},
+            "outcome": overall, "final": overall != "in_progress", "devices": devs}
 
 
 @router.get("/artifacts/list")

@@ -47,6 +47,13 @@ export const api = {
   // the devices of a Mender deployment (who it touched + each device's status)
   deploymentDevices: (id) => call(`/deployments/${id}/devices`),
   artifacts: () => call('/deployments/artifacts/list'),
+  // ── App rollouts (hil-app-ota G2): the Mender artifacts (summarised) → ONE artifact to the
+  // chosen devices (one device = HIL) → per-device progress + outcome.
+  menderArtifacts: () => call('/artifacts'),
+  createAppRollout: (artifact_name, devices, name) =>
+    call('/deployments/app', { method: 'POST',
+      body: JSON.stringify({ artifact_name, devices, ...(name ? { name } : {}) }) }),
+  deploymentOutcome: (id) => call(`/deployments/${encodeURIComponent(id)}/outcome`),
   createDeployment: (artifact_name, group, name) =>
     call('/deployments', { method: 'POST', body: JSON.stringify({ artifact_name, group, name }) }),
   runtimePlane: () => call('/planes/runtime'),
