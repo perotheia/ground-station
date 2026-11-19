@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
-from .routers import campaign, deployments, devices, planes, rigs, ucm
+from .routers import artifacts, campaign, deployments, devices, planes, rigs, ucm
 from .settings import settings
 
 
@@ -74,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(ucm.router)
     app.include_router(campaign.router)
     app.include_router(rigs.router)          # Add device / Deploy runtime / runs / ONE fleet list
+    app.include_router(artifacts.router)     # the Mender artifacts a rollout can deploy
     from .routers import pki
     app.include_router(pki.router)
     return app

@@ -121,6 +121,9 @@ class FakeMender:
         self.tag_writes: list[tuple[str, dict]] = []
         self.dep = "/api/management/v1/deployments/deployments"
         self.art = "/api/management/v1/deployments/artifacts"
+        self.artifacts: list[dict] = []
+        self.deps: dict[str, dict] = {}            # created deployments: {dep, devices{id: row}, logs{id: text}}
+        self.created_deployments: list[dict] = []
 
     @classmethod
     def from_fixtures(cls):
@@ -131,7 +134,47 @@ class FakeMender:
             idd = {"device_id": (f.get("attributes") or {}).get("device_id")}
             auth.append({"id": f["id"], "identity_data": idd, "status": f["auth_status"],
                          "auth_sets": [{"id": f["auth_set_id"], "identity_data": idd, "status": f["auth_status"]}]})
-        return cls(devices, auth)
+        fake = cls(devices, auth)
+        fake.artifacts = _load("deployments_artifacts_list.json")["artifacts"]
+        return fake
+
+    # artifacts + app deployments (the rollout path)
+    def list_artifacts(self):
+        return copy.deepcopy(self.artifacts)
+
+    def create_deployment(self, name, artifact_name, devices):
+        did = str(uuid.uuid4())
+        dep = {"id": did, "name": name, "artifact_name": artifact_name, "status": "pending",
+               "created": "2026-11-20T10:00:00.000Z", "device_count": len(devices),
+               "filter": {"terms": [{"scope": "identity", "attribute": "id", "type": "$in",
+                                     "value": list(devices)}]},
+               "statistics": {"status": {"pending": len(devices)}}}
+        self.deps[did] = {"dep": dep, "devices": {}, "logs": {}}
+        self.created_deployments.append({"id": did, "name": name, "artifact_name": artifact_name,
+                                         "devices": list(devices)})
+        return did
+
+    def report(self, dep_id, device_id, status, log=None):
+        """A device reports a deployment state (what mender-update sends); the deployment finishes
+        once every target is terminal."""
+        d = self.deps[dep_id]
+        row = d["devices"].setdefault(device_id, {"id": device_id, "created": d["dep"]["created"]})
+        row["status"] = status
+        if log is not None:
+            d["logs"][device_id] = log
+            row["log"] = True
+        targets = d["dep"]["filter"]["terms"][0]["value"]
+        terminal = {"success", "failure", "aborted", "noartifact", "already-installed", "decommissioned"}
+        if all(d["devices"].get(t, {}).get("status") in terminal for t in targets):
+            d["dep"]["status"] = "finished"
+        else:
+            d["dep"]["status"] = "inprogress"
+
+    def deployment_devices(self, dep_id):
+        return copy.deepcopy(list(self.deps[dep_id]["devices"].values()))
+
+    def deployment_device_log(self, dep_id, device_id):
+        return self.deps[dep_id]["logs"].get(device_id, "")
 
     def add_pending(self, device_id: str | None, dev_id: str | None = None, mac: str | None = None,
                     pubkey: str | None = None) -> dict:
@@ -186,6 +229,8 @@ class FakeMender:
 
     # deployments (for the /rollout ECU view)
     def deployment_status(self, dep_id):
+        if dep_id in self.deps:
+            return copy.deepcopy(self.deps[dep_id]["dep"])
         return {"id": dep_id, "status": "inprogress", "artifacts": []}
 
     def deployment_statistics(self, dep_id):
@@ -319,8 +364,8 @@ def com_calls(monkeypatch):
 def wire(monkeypatch, mender, colony, com_calls):
     """Route every gs-api module to the fakes; shorten the follower timings; return an app factory."""
     from gs_api import clients, colony_client
-    from gs_api.routers import campaign, deployments, devices, rigs, ucm
-    for mod in (clients, deployments, devices, ucm, campaign):
+    from gs_api.routers import artifacts, campaign, deployments, devices, rigs, ucm
+    for mod in (clients, deployments, devices, ucm, campaign, artifacts):
         if hasattr(mod, "mender_client"):
             monkeypatch.setattr(mod, "mender_client", lambda s, _m=mender: _m)
     for mod in (colony_client, deployments, devices):
@@ -345,6 +390,23 @@ def wire(monkeypatch, mender, colony, com_calls):
         return TestClient(create_app())
     yield make_client
     rigs.reset_state()
+
+
+def make_artifact(name, signed=True, kind="theia-swp", device_types=("theia-rig",), meta=None, size=7680):
+    """A Mender artifact in the management API's shape (as the live server lists it)."""
+    upd = {"type_info": {"type": kind},
+           "files": [{"name": f"{name}.tar.gz", "checksum": "0" * 64, "size": size - 1024,
+                      "date": "2026-11-20T09:00:00Z"},
+                     {"name": "version.txt", "checksum": "1" * 64, "size": 24, "date": "2026-11-20T09:00:00Z"}]}
+    if meta:
+        upd["meta_data"] = dict(meta)
+    return {"id": str(uuid.uuid4()), "description": "", "name": name,
+            "device_types_compatible": list(device_types), "info": {"format": "mender", "version": 3},
+            "signed": signed, "updates": [upd],
+            "artifact_provides": {"artifact_name": name, f"rootfs-image.{kind}.version": name},
+            "artifact_depends": {"device_type": list(device_types)},
+            "clears_artifact_provides": [f"rootfs-image.{kind}.*"], "size": size,
+            "modified": "2026-11-20T09:00:01.000Z"}
 
 
 def wait_for(pred, timeout=5.0):
