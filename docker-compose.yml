@@ -20,27 +20,24 @@ services:
   # that `theia release --runtime/--app` writes + colony's factory provision reads.
   #   bucket theia-runtime/<ver>/{theia-runtime,theia-services}_<arch>.deb + index.json
   #   bucket theia-apps/<fleet>/<app>/<ver>/{<fc>_<arch>.deb, manifest.json, index.json}
-  minio:
-    # minio/minio left the public registries (pull access denied, 2026-11): S3_IMAGE selects the S3 server.
-    # Default = Chainguard's MinIO build, pinned by digest (same `server` command; verified at bring-up).
-    image: "${S3_IMAGE:-cgr.dev/chainguard/minio@sha256:16b824a0016ffad3dfa8b059755f83800aa42ca68fe86f1782cabd0c5a16d322}"
-    container_name: gs-minio
-    command: ["server", "/data", "--console-address", ":9001"]
+  # The GS's own S3 (runtime / swp / roles / distributions / rollouts planes): SeaweedFS, the same server and
+  # version Mender v4.1.5 ships for itself, pinned by digest. A SEPARATE instance with its own credentials (not
+  # Mender's): the two planes share nothing but the image. theia-runtime is anonymously READABLE (rigs pull the
+  # runtime over plain HTTP at provision); everything else needs the key. Replaces minio/minio (image withdrawn).
+  gs-s3:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    container_name: gs-s3
+    command: ["server", "-dir=/data", "-ip.bind=0.0.0.0", "-volume.max=64", "-s3", "-s3.port=9000", "-s3.config=/etc/seaweedfs/s3.json"]
     ports:
-      - "9000:9000"   # S3 API — colony/theia release reach this from the DMZ
-      - "9001:9001"   # console
-    environment:
-      MINIO_ROOT_USER: "${MINIO_USER:?set MINIO_USER in .env}"
-      MINIO_ROOT_PASSWORD: "${MINIO_PASSWORD:?set MINIO_PASSWORD in .env (no default)}"
+      - "${GS_S3_BIND:-0.0.0.0}:9000:9000"   # S3 API: rigs (provision) + `theia release --s3`
+    configs:
+      - source: gs-s3-conf
+        target: /etc/seaweedfs/s3.json
     volumes:
-      - gs-minio-data:/data
+      - gs-s3-data:/data
     networks:
       - mender
 
-  # The operator backend — FastAPI over the Mender Management API (deployments,
-  # devices, artifacts) + the MinIO distribution planes (runtime + app vendoring).
-  # Holds the Mender PAT + MinIO creds; the browser never sees them (it talks to
-  # gs-web → /api → here). Reuses ./fleet/fleet.py (the Mender client), mounted.
   gs-api:
     build: ./api
     container_name: gs-api
@@ -48,14 +45,14 @@ services:
       - ./fleet:/gs/fleet:ro      # clients.py loads fleet.py (the Mender client)
     environment:
       # The Mender GW (server DNS name on the mender network) + a PAT.
-      MENDER_SERVER: "${MENDER_SERVER:-https://mender-api-gateway}"
+      MENDER_SERVER: "${MENDER_SERVER:-https://traefik}"
       MENDER_TOKEN: "${MENDER_TOKEN:?set MENDER_TOKEN (a Mender PAT) in .env}"
       MENDER_INSECURE: "${MENDER_INSECURE:-1}"
       MENDER_FLAVOR: "${MENDER_FLAVOR:-oss}"
-      # The distribution planes (the gs-minio service above).
-      S3_ENDPOINT: "${S3_ENDPOINT:-http://gs-minio:9000}"
-      MINIO_USER: "${MINIO_USER:?}"
-      MINIO_PASSWORD: "${MINIO_PASSWORD:?}"
+      # The distribution planes (the gs-s3 service above).
+      S3_ENDPOINT: "${S3_ENDPOINT:-http://gs-s3:9000}"
+      MINIO_USER: "${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}"      # gs-api reads the S3 key under its old names
+      MINIO_PASSWORD: "${S3_SECRET_KEY:?set S3_SECRET_KEY in .env (no default)}"
       # API key gating the mutating routes (deploy/publish). Unset → open (the
       # browser-only path); set it the moment a remote caller (CI, MCP) reaches in.
       GS_API_KEY: "${GS_API_KEY:-}"
@@ -113,7 +110,7 @@ services:
       - mender
 
 volumes:
-  gs-minio-data:
+  gs-s3-data:
   colony-journal:
 
 # The Mender GW (up.sh) creates this network; join it as external so fleet-ops
@@ -122,3 +119,12 @@ networks:
   mender:
     external: true
     name: "${MENDER_NETWORK:-mender}"
+
+configs:
+  gs-s3-conf:
+    content: |
+      {"identities": [
+        {"name": "anonymous", "actions": ["Read:${S3_RUNTIME_BUCKET:-theia-runtime}", "List:${S3_RUNTIME_BUCKET:-theia-runtime}"]},
+        {"name": "gs", "credentials": [{"accessKey": "${S3_ACCESS_KEY:?}", "secretKey": "${S3_SECRET_KEY:?}"}],
+         "actions": ["Admin", "Read", "Write", "List", "Tagging"]}
+      ]}
