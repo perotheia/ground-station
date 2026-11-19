@@ -16,34 +16,28 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import com_client
+from ..addressing import COM_PORT, NoReachableAddress, com_endpoint
 from ..auth import require_key
 from ..clients import mender_client
 from ..settings import settings
 
 router = APIRouter(prefix="/api/campaign", tags=["campaign"])
 
-COM_PORT = 7700
-
 
 def _coordinator_endpoint(device_id: str) -> str:
     """Resolve a Mender device id → its com gRPC endpoint (<ip>:7700). For L4-B the
     device_id is the CENTRAL/gateway board (the one Mender device-of-record for the
-    robot) — the coordinator running V-UCM."""
+    robot) — the coordinator running V-UCM.
+    The address is the device's REACHABLE one (addressing.com_endpoint: remote_ip, then local_ip), never an
+    inventory ipv4_* interface."""
     s = settings()
     for d in mender_client(s).devices():
         if d.get("id") != device_id:
             continue
-        attrs = {a["name"]: a["value"] for a in d.get("attributes", []) or []}
-        ip = None
-        for k, v in attrs.items():
-            if k.startswith("ipv4") and v:
-                ip = v[0] if isinstance(v, list) else v
-                ip = str(ip).split("/")[0]
-                break
-        if not ip:
-            raise HTTPException(status_code=400,
-                                detail=f"device {device_id} reports no ipv4 in inventory")
-        return f"{ip}:{COM_PORT}"
+        try:
+            return com_endpoint(d, COM_PORT)
+        except NoReachableAddress as e:
+            raise HTTPException(status_code=400, detail=str(e))
     raise HTTPException(status_code=404, detail="device not found")
 
 

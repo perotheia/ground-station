@@ -13,7 +13,7 @@ import os
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
-from .. import com_client
+from .. import addressing, com_client
 from ..clients import mender_client
 from ..colony_client import colony_client
 from ..settings import settings
@@ -98,7 +98,7 @@ def _flatten(dev: dict) -> dict:
         # prefer remote_ip then local_ip. See project-preauth-device-workflow.
         "local_ip": attrs.get("local_ip"),
         "remote_ip": attrs.get("remote_ip"),
-        "reachable_ip": attrs.get("remote_ip") or attrs.get("local_ip"),
+        "reachable_ip": addressing.reachable_ip(dev),   # the ONE rule (remote_ip, local_ip; never ipv4_*)
         # keep the raw attrs for a detail view / future panels
         "attributes": attrs,
     }

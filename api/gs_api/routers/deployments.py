@@ -11,7 +11,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import com_client
+from .. import addressing, com_client
 from ..auth import require_key
 from ..clients import mender_client, plane_client, resolve_fleet
 from ..colony_client import colony_client
@@ -942,10 +942,10 @@ def _com_endpoint(dev: dict | None) -> str | None:
     local_ip — the same address ops use), :7700. Not the first ipv4_* inventory
     value: that is an on-board NIC (the AI-64 reports a 192.168.64.x usb/eth
     address first), not where the GS can reach it."""
-    if not dev:
+    try:
+        return addressing.com_endpoint(dev)
+    except addressing.NoReachableAddress:
         return None
-    ip = _flatten(dev).get("reachable_ip")
-    return f"{str(ip).split('/')[0]}:7700" if ip else None
 
 
 # ── Distribution one-click deploy (UF concept) ───────────────────────────────
