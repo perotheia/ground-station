@@ -109,6 +109,8 @@ services:
       # the S3 plane as BOTH the controller (this container) and the rigs reach it: the fleet host's address
       THEIA_S3_ENDPOINT: "${THEIA_S3_ENDPOINT:?set THEIA_S3_ENDPOINT=http://<fleet host>:9000 in .env}"
       # the Mender server as the RIGS reach it (colony tasks/mender-enroll.yml); empty host = no Mender enrollment
+      THEIA_S3_RIG_ENDPOINT: "https://${MENDER_RIG_HOST:-docker.mender.io}"   # rigs: the S3 plane through the gateway (TLS)
+      THEIA_S3_RIG_CA: /etc/mender/server.crt                                # the pinned gateway cert on the rig
       MENDER_SERVER_HOST: "${MENDER_RIG_HOST:-docker.mender.io}"
       MENDER_SERVER_IP: "${MENDER_RIG_IP:-}"
       MENDER_SERVER_CA: /run/mender-server-ca.crt
