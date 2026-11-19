@@ -7,12 +7,28 @@ client (no requests dep — same discipline as fleet.py). gs-api fans
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 
+_SECRET_RE = re.compile(r"tskey-[A-Za-z0-9_-]*")
+
+
+def redact(obj):
+    """A colony answer without secrets: every `input` (pydantic echoes the request in a 422; an older colony-api
+    answered the `secrets` field with the VPN auth key in it) is dropped and any Tailscale key text masked."""
+    if isinstance(obj, dict):
+        return {k: redact(v) for k, v in obj.items() if k != "input"}
+    if isinstance(obj, list):
+        return [redact(v) for v in obj]
+    if isinstance(obj, str):
+        return _SECRET_RE.sub("tskey-***", obj)
+    return obj
+
 
 class ColonyError(RuntimeError):
-    """A colony-api answer that is not a success: carries the HTTP status and the parsed body."""
+    """A colony-api answer that is not a success: carries the HTTP status and the parsed body (redacted: never
+    a request `input` nor a key, whatever colony put in it)."""
 
     def __init__(self, what: str, status: int, data: bytes) -> None:
         self.status = status
@@ -22,7 +38,8 @@ class ColonyError(RuntimeError):
             self.body = {"detail": data.decode(errors="replace")[:400]}
         if not isinstance(self.body, dict):
             self.body = {"detail": self.body}
-        super().__init__(f"colony {what} [{status}]: {data.decode(errors='replace')[:200]}")
+        self.body = redact(self.body)
+        super().__init__(f"colony {what} [{status}]: {json.dumps(self.body)[:200]}")
 
     @property
     def detail(self) -> str:
