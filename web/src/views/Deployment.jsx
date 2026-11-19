@@ -322,6 +322,7 @@ function ActionHistory({ targetName, targetId }) {
   const appDeps = (data?.deployments || []).filter((d) => d.authority === 'app')
   const depDevices = useDeploymentDevices(appDeps, !!targetId)
   const [busy, setBusy] = useState(false)
+  const [confirmClear, setConfirmClear] = useState(false)   // "Clear all" asks first
   const [open, setOpen] = useState({})           // group key → expanded?
   // GLOBAL cleared-before epoch (not per-target — one shared surface; a deleted
   // target must not orphan its history). Hides app (Mender) rows older than the
@@ -329,7 +330,7 @@ function ActionHistory({ targetName, targetId }) {
   const clearedBefore = Number(localStorage.getItem('gs.clearedBefore') || 0)
 
   const doClear = async () => {
-    setBusy(true)
+    setConfirmClear(false); setBusy(true)
     const before = Date.now() / 1000
     try {
       await api.clearActions(null, before)       // rig=null → GLOBAL prune
@@ -353,9 +354,14 @@ function ActionHistory({ targetName, targetId }) {
     <div className="pane min-h-0">
       <div className="pane-head flex items-center">Action History
         {targetName && <span className="text-muted font-normal">: {targetName}</span>}
-        <button className="btn-ghost text-[11px] ml-auto" disabled={busy}
-                title="prune finished base actions everywhere + hide older app actions (global)"
-                onClick={doClear}>{busy ? '…' : 'Clear all'}</button></div>
+        <span className="ml-auto">
+          {confirmClear
+            ? <RowConfirm label="clear ALL action history (every target)" onYes={doClear}
+                          onNo={() => setConfirmClear(false)} />
+            : <button className="btn-ghost text-[11px]" disabled={busy}
+                      title="prune finished base actions everywhere + hide older app actions (global)"
+                      onClick={() => setConfirmClear(true)}>{busy ? '…' : 'Clear all'}</button>}
+        </span></div>
       <div className="flex-1 overflow-auto">
         <table className="w-full">
           <thead className="sticky top-0 bg-sidebar/60">

@@ -104,7 +104,10 @@ export function Distributions() {
   const runtimes = (rtData?.releases || []).filter((r) => !r._error).map((r) => r.key || r.version)
   const swpBuilds = apps.map((a) => a.app + '-' + a.version)   // SWP build keys (abi from name when present)
 
-  const del = async (d) => { try { await api.deleteDistribution(d.name, d.version); refresh() } catch (e) { alert(e.message) } }
+  const del = async (d) => {
+    if (!window.confirm(`Delete distribution ${d.name} ${d.version}?`)) return
+    try { await api.deleteDistribution(d.name, d.version); refresh() } catch (e) { alert(e.message) }
+  }
 
   return (
     <div className="pane h-full">
