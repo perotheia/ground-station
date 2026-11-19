@@ -17,6 +17,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-GS-Key "${GS_API_KEY}";
+        proxy_read_timeout 900s;   # /api/deployments/base waits for the play (a provision takes minutes; 60 s gave a 504)
+        proxy_send_timeout 900s;
         proxy_read_timeout 120s;   # artifact uploads to the GW can be slow
     }
 
