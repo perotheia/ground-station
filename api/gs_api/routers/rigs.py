@@ -316,7 +316,7 @@ def run_view(col, rec: dict) -> dict:
             out["accepted"] = False if status == "failure" else None
         elif f:
             out["accepted"] = f.get("accepted")
-        elif cls == "opkg":
+        elif cls == "opkg" and _mender_skipped(rec):
             out["accepted"] = "not-a-mender-rig"
         else:
             out["accepted"] = _accepted_from_mender(rec.get("rig") or "")
@@ -413,10 +413,17 @@ def _write_tags(m, dev_id: str, tags: dict) -> bool:
     return False
 
 
+def _mender_skipped(rec: dict, skips=None) -> bool:
+    """True when this provision skipped the Mender client by design (colony before 4bca3ec: opkg rigs had none).
+    Since 4bca3ec opkg rigs get the Arago client and go through the same key-bound accept as Debian rigs."""
+    skips = skips if skips is not None else (rec.get("skipped_by_design") or [])
+    return any("mender" in str(x).lower() for x in skips)
+
+
 def _after_provision(col, rec: dict, f: dict) -> None:
     rig = rec.get("rig") or ""
     cls, skips = _rig_class(col, rec)
-    if cls == "opkg":
+    if cls == "opkg" and _mender_skipped(rec, skips):
         f["accepted"] = "not-a-mender-rig"
         f["note"] = "opkg rig: base plane only, no Mender client (nothing to accept)"
         return

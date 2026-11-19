@@ -315,6 +315,17 @@ def test_mender_pubkey_field_as_colony_sends_it(wire, colony, mender):
     assert _final(c, run_id)["accepted"] is True and mender.accepted == [(pend["id"], _set(pend))]
 
 
+def test_opkg_rig_with_mender_is_accepted_by_key(wire, colony, mender):
+    """colony >= 4bca3ec installs the Arago Mender client on opkg rigs: the SK goes through the key-bound accept."""
+    key = new_pubkey()
+    c = wire()
+    run_id = _add(c, name="sk-m", user="root").json()["run_id"]
+    pend = mender.add_pending("sk-m", pubkey=key)
+    colony.finish(run_id, log=provision_log("sk-m", cls="opkg", skips="os-packages (apt), etcd (apt package)"),
+                  rig_class="opkg", skipped_by_design=["os-packages (apt)", "etcd (apt package)"], mender_pubkey=key)
+    assert _final(c, run_id)["accepted"] is True and mender.accepted == [(pend["id"], _set(pend))]
+
+
 def test_opkg_rig_is_not_accepted(wire, colony, mender):
     c = wire()
     run_id = _add(c, name="sk-new", user="root").json()["run_id"]
