@@ -635,15 +635,22 @@ def decommission(device_id: str) -> dict:
 
 # ── Enrolment helpers (Create New Target modal) ──────────────────────────────
 @router.get("/probe")
-def probe(host: str) -> dict:
+def probe(host: str, user: str | None = None) -> dict:
     """SSH-probe a host for its stable identity (MAC + hostname) to PREFILL the
     Create-Target modal. gs-api has no SSH; colony-api does (the rig key), so we
-    proxy to it. The operator types a Host IP → reload → Controller ID=MAC,
-    Name=hostname."""
+    proxy to it. The operator types a Host IP (+ the ssh user, default debian) →
+    reload → Controller ID=MAC, Name=hostname. colony validates host and user."""
+    import re as _re
+    from urllib.parse import urlencode
     from ..colony_client import colony_client
     s = settings()
     col = colony_client(s)
-    st, data = col._req("GET", f"/probe?host={host}")  # noqa: SLF001
+    q = {"host": host}
+    if user:
+        if not _re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user):
+            raise HTTPException(status_code=422, detail="user: not a valid ssh user name")
+        q["user"] = user
+    st, data = col._req("GET", f"/probe?{urlencode(q)}")  # noqa: SLF001
     if st != 200:
         import json as _j
         try:

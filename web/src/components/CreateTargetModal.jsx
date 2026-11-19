@@ -5,6 +5,7 @@ import { api } from '../api'
 // "Connect a new device" and the Deployment board + icon.
 export function CreateTargetModal({ onClose, onCreated }) {
   const [host, setHost] = useState('')          // Host IP to probe
+  const [sshUser, setSshUser] = useState('debian')  // the ssh user colony probes as
   const [controllerId, setControllerId] = useState('')  // = UUID (mender identity we set on the device)
   const [probedHost, setProbedHost] = useState('')
   const [name, setName] = useState('')
@@ -23,7 +24,7 @@ export function CreateTargetModal({ onClose, onCreated }) {
     if (!host.trim()) { setErr('enter a Host IP first'); return }
     setBusy(true); setErr(null)
     try {
-      const r = await api.probe(host.trim())
+      const r = await api.probe(host.trim(), sshUser.trim() || undefined)
       setControllerId(r.controller_id || '')   // UUID identity (consistent w/ preauth)
       setName(r.hostname || '')
       setProbedHost(host.trim())
@@ -69,6 +70,12 @@ export function CreateTargetModal({ onClose, onCreated }) {
           <button className="btn-ghost text-xs" disabled={busy} onClick={reload}>
             {busy ? '…' : '⟳ reload'}
           </button>
+        </div>
+        <div className="flex items-center gap-2 -mt-2 mb-4">
+          <label className="w-28 text-right text-xs text-muted">SSH user</label>
+          <input className="input flex-1 text-sm font-mono" placeholder="debian" value={sshUser}
+                 onChange={(e) => setSshUser(e.target.value)}
+                 onKeyDown={(e) => e.key === 'Enter' && reload()} />
         </div>
 
         <div className="space-y-3">

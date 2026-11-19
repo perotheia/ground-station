@@ -87,7 +87,8 @@ export const api = {
   pinDevice: (id, pinned) =>
     call(`/devices/${id}/pin`, { method: 'POST', body: JSON.stringify({ pinned }) }),
   // ── Create New Target (enrolment) — SSH-probe a host + the Type options ───
-  probe: (host) => call(`/devices/probe?host=${encodeURIComponent(host)}`),
+  probe: (host, user) => call(`/devices/probe?host=${encodeURIComponent(host)}`
+    + (user ? `&user=${encodeURIComponent(user)}` : '')),
   deviceTypes: () => call('/devices/types'),
   setIdentity: (host, controller_id) =>
     call('/devices/set-identity', { method: 'POST', body: JSON.stringify({ host, controller_id }) }),
