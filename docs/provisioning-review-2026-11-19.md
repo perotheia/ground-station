@@ -88,3 +88,22 @@ now? If not, park VUCM/UCM campaigns behind a flag and keep the single path.
    script from colony.
 6. Docs: the skill references (provision-orchestrate.md, fleet-deploy-cli.md) and two-plane-ota-ops.md to the
    flow above.
+
+## 6. GS web UI, operator test (headless Chromium, 30 screenshots, read-only; 2026-11-19)
+Fast and stable (0.2-0.6 s loads, honest error banners; the per-device Mender log shows the signature refusal and
+the health-gate rollback). What misleads or blocks an operator:
+- HIGH: the enrolled AI-64 shows red "no observability" and no runtime although both are fine: the GS aggregator
+  was misconfigured (`127.0.0.1:7700`, fixed on panzer) and com reports the machine as `master` (the role) while
+  the GS knows the device as `ai64-proto` (section 3); the base-state tags are never written (colony keeps
+  `runtime_version` under `extra`).
+- HIGH: selecting a device hides its Mender deployments (matched by name substring); the timeline and Rollouts
+  show a deployment as "finished" when the device failed; a rollback is visible only inside the raw log; a
+  deployed runtime shows "Locked: no" with a live delete button; the rollout view asks com on the wrong
+  interface address and prints a raw gRPC dump.
+- MEDIUM: probe SSHes with a fixed user; the SK (no Mender) is invisible except as one history row; Mender
+  artifacts are not listed in Releases; "Clear all" and distribution delete have no confirmation; timeline
+  timestamps mix epochs and ISO.
+- NEEDS CURL TODAY: provision / orchestrate a board, deploy or list Mender artifacts, per-device status of a
+  deployment, the reason a deployment failed, anything about a non-Mender rig.
+Small fixes F1-F9 are being made (branch `ui-fixes`); the rest belongs to the "Add device / two operator steps"
+proposal in section 4.
