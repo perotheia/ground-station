@@ -53,7 +53,7 @@ echo "[enroll] $RIG → $SERVER_HOST ($SERVER_IP) [transport=$RIG_EXEC]"
 #                                     where there is no SSH host running the server)
 #   SERVER_SSH=<alias>              — ssh into the server host and cat its CA
 #                                     (the dev-box/dalek path; default).
-SERVER_SSH="${SERVER_SSH:-dalek}"
+SERVER_SSH="${SERVER_SSH:?set SERVER_SSH to the fleet host (ssh name)}"
 ca="$(mktemp)"
 if [ -n "${SERVER_CA:-}" ] && [ -s "${SERVER_CA}" ]; then
     cp "$SERVER_CA" "$ca"

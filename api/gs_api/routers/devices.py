@@ -30,7 +30,7 @@ def _require_key(x_gs_key: str | None = Header(default=None)) -> None:
 # The com AGGREGATOR endpoint that answers ListMachines (the central board's com).
 # The whole cluster's Observability presence comes from this one hub.
 def _aggregator() -> str:
-    return os.environ.get("GS_COM_AGGREGATOR", "10.0.0.99:7700")
+    return os.environ.get("GS_COM_AGGREGATOR", "")
 
 
 def _scalar(v):

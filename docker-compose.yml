@@ -21,15 +21,17 @@ services:
   #   bucket theia-runtime/<ver>/{theia-runtime,theia-services}_<arch>.deb + index.json
   #   bucket theia-apps/<fleet>/<app>/<ver>/{<fc>_<arch>.deb, manifest.json, index.json}
   minio:
-    image: minio/minio:latest
+    # minio/minio left the public registries (pull access denied, 2026-11): S3_IMAGE selects the S3 server.
+    # Default = Chainguard's MinIO build, pinned by digest (same `server` command; verified at bring-up).
+    image: "${S3_IMAGE:-cgr.dev/chainguard/minio@sha256:16b824a0016ffad3dfa8b059755f83800aa42ca68fe86f1782cabd0c5a16d322}"
     container_name: gs-minio
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
       - "9000:9000"   # S3 API — colony/theia release reach this from the DMZ
       - "9001:9001"   # console
     environment:
-      MINIO_ROOT_USER: "${MINIO_USER:-theia}"
-      MINIO_ROOT_PASSWORD: "${MINIO_PASSWORD:-theiaminio}"
+      MINIO_ROOT_USER: "${MINIO_USER:?set MINIO_USER in .env}"
+      MINIO_ROOT_PASSWORD: "${MINIO_PASSWORD:?set MINIO_PASSWORD in .env (no default)}"
     volumes:
       - gs-minio-data:/data
     networks:
@@ -52,8 +54,8 @@ services:
       MENDER_FLAVOR: "${MENDER_FLAVOR:-oss}"
       # The distribution planes (the gs-minio service above).
       S3_ENDPOINT: "${S3_ENDPOINT:-http://gs-minio:9000}"
-      MINIO_USER: "${MINIO_USER:-theia}"
-      MINIO_PASSWORD: "${MINIO_PASSWORD:-theiaminio}"
+      MINIO_USER: "${MINIO_USER:?}"
+      MINIO_PASSWORD: "${MINIO_PASSWORD:?}"
       # API key gating the mutating routes (deploy/publish). Unset → open (the
       # browser-only path); set it the moment a remote caller (CI, MCP) reaches in.
       GS_API_KEY: "${GS_API_KEY:-}"
@@ -63,7 +65,7 @@ services:
       COLONY_API_KEY: "${COLONY_API_KEY:-}"
       # The com aggregator answering ListMachines (cluster Observability presence +
       # the base-state mirror's rig→device map). The central board's com.
-      GS_COM_AGGREGATOR: "${GS_COM_AGGREGATOR:-10.0.0.99:7700}"
+      GS_COM_AGGREGATOR: "${GS_COM_AGGREGATOR:?set GS_COM_AGGREGATOR=<fleet host>:7700 in .env}"
     networks:
       - mender
 

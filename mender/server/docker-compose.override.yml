@@ -9,7 +9,7 @@
 # (theia-routes.yaml) so it does not depend on Docker-label discovery at all.
 services:
   dockerproxy:
-    image: tecnativa/docker-socket-proxy:latest
+    image: tecnativa/docker-socket-proxy:3.4@sha256:027f9fa5ee70be5836eeaa10ce889d7a83f34a8db16a7f412818b92997e0beab
     environment:
       - CONTAINERS=1
       - NETWORKS=1
@@ -21,10 +21,9 @@ services:
     networks:
       - default
   traefik:
-    image: traefik:v3.3
+    image: traefik:v3.7.19@sha256:a6c0194dda77bcb804824580f36fa7edc56e315b1acfe933366c8b52844a78a4
     command:
-      - --api=true
-      - --api.insecure=true
+      - --api=true          # dashboard NOT exposed (was --api.insecure=true: unauthenticated :8080)
       - --accesslog=true
       - --entrypoints.web.address=:80
       - --entrypoints.web.http.redirections.entryPoint.scheme=https

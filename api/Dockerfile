@@ -1,7 +1,7 @@
 # gs-api — the ground-station operator backend (FastAPI + uvicorn).
 # Reuses ../fleet/fleet.py (the Mender client) mounted at /gs/fleet; the package
 # itself ships here. Runs on the Mender network so it reaches the GW + gs-minio.
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 WORKDIR /gs/api
 COPY pyproject.toml ./

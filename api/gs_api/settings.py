@@ -26,7 +26,7 @@ class Settings:
     # ---- MinIO distribution planes (S3) ----
     s3_endpoint: str = os.environ.get("S3_ENDPOINT", "http://gs-minio:9000")
     s3_access_key: str = os.environ.get("MINIO_USER", "theia")
-    s3_secret_key: str = os.environ.get("MINIO_PASSWORD", "theiaminio")
+    s3_secret_key: str = os.environ.get("MINIO_PASSWORD", "")   # required (no default secret)
     s3_runtime_bucket: str = os.environ.get("S3_RUNTIME_BUCKET", "theia-runtime")
     s3_swp_bucket: str = os.environ.get("S3_SWP_BUCKET", "theia-swp")
     s3_roles_bucket: str = os.environ.get("S3_ROLES_BUCKET", "theia-roles")
@@ -39,7 +39,7 @@ class Settings:
     colony_api_key: str = os.environ.get("COLONY_API_KEY", "")
     # The com aggregator that answers ListMachines — the whole cluster's
     # Observability presence + the base-state mirror's machine→device mapping.
-    com_aggregator: str = os.environ.get("GS_COM_AGGREGATOR", "10.0.0.99:7700")
+    com_aggregator: str = os.environ.get("GS_COM_AGGREGATOR", "")   # required: <fleet host>:7700 (no site default)
 
     # ---- service ----
     cors_origins: str = os.environ.get("GS_CORS_ORIGINS", "*")

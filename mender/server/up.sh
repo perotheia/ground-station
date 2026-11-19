@@ -22,7 +22,7 @@
 # /etc/hosts → the fleet host IP, the cert's vhost).
 set -euo pipefail
 
-MENDER_SERVER_REF="${MENDER_SERVER_REF:-v4.0.1}"
+MENDER_SERVER_REF="${MENDER_SERVER_REF:-v4.1.5}"
 WORK="${MENDER_SERVER_DIR:-$HOME/mender-server}"
 REPO="https://github.com/mendersoftware/mender-server.git"
 
