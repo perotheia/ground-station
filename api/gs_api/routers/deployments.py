@@ -316,8 +316,23 @@ def deploy_base(req: BaseDeployRequest) -> dict:
                 host = _flatten(dev).get("reachable_ip")
         except Exception:  # noqa: BLE001
             pass
+    # ENROLLMENT through the GS: a provision also joins the rig to the fleet VPN. The GS mints the per-rig key
+    # (single-use, tag:fleet-rig, short-lived) and hands it to colony as a deployment secret; colony reports the
+    # rig's tailnet address, recorded below as remote_ip (ops prefer remote_ip over local_ip).
+    secrets = None
+    vpn_note = "n/a"
+    if req.kind == "provision":
+        from .. import vpn
+        if vpn.enabled():
+            try:
+                secrets = {"vpn_authkey": vpn.mint_rig_key(req.rig)}
+                vpn_note = "key minted"
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"fleet VPN: cannot mint the rig key: {e}")
+        else:
+            vpn_note = "not configured (TS_API_TOKEN_FILE): provision WITHOUT the VPN join"
     try:
-        dep = col.create(req.rig, req.kind, req.schedule, host=host, extra=extra)
+        dep = col.create(req.rig, req.kind, req.schedule, host=host, extra=extra, secrets=secrets)
     except Exception as e:  # noqa: BLE001
         # Turn a colony error (404 no-rig / no-host, connection refused, …) into a
         # clean JSON 502 so the GS UI shows a message instead of failing JSON.parse.
@@ -338,6 +353,15 @@ def deploy_base(req: BaseDeployRequest) -> dict:
     stats = (dep.get("statistics") or {}).get("status", {})
     ok = stats.get("success", 0) > 0 and stats.get("failure", 0) == 0
     mirrored = False
+    vpn_ip = dep.get("vpn_ip")
+    if vpn_ip and req.device_id:
+        try:
+            mender_client(s).set_tags(req.device_id, {"remote_ip": vpn_ip})
+            vpn_note = f"joined: remote_ip {vpn_ip}"
+        except Exception:  # noqa: BLE001
+            vpn_note = f"joined ({vpn_ip}) but the remote_ip tag was not written"
+    elif vpn_ip:
+        vpn_note = f"joined: {vpn_ip}"
     _scope = req.scope or {"app": True, "runtime": True}
     if req.kind == "cleanup" and ok and _scope.get("runtime", True):
         # the device was deprovisioned — drop the colony base-state tags so the
@@ -374,7 +398,7 @@ def deploy_base(req: BaseDeployRequest) -> dict:
             pass            # tag-clear is best-effort; cleanup already ran
     elif req.mirror and ok:
         mirrored = _mirror_base_state(s, req.rig, dep)
-    return {"deployment": dep, "ok": ok, "mirrored": mirrored}
+    return {"deployment": dep, "ok": ok, "mirrored": mirrored, "vpn": vpn_note}
 
 
 def _mirror_base_state(s, rig: str, dep: dict) -> bool:

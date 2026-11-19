@@ -50,11 +50,12 @@ class Colony:
 
     def create(self, rig: str, kind: str = "orchestrate",
                schedule: float | None = None, name: str | None = None,
-               host: str | None = None, extra: dict | None = None) -> dict:
-        st, data = self._req("POST", "/deployments",
-                             {"rig": rig, "kind": kind,
-                              "schedule": schedule, "name": name, "host": host,
-                              "extra": extra})
+               host: str | None = None, extra: dict | None = None,
+               secrets: dict | None = None) -> dict:
+        body = {"rig": rig, "kind": kind, "schedule": schedule, "name": name, "host": host, "extra": extra}
+        if secrets:                      # colony-api: a 0600 vars file, never journaled
+            body["secrets"] = secrets
+        st, data = self._req("POST", "/deployments", body)
         if st not in (200, 201):
             raise RuntimeError(f"colony create [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"{}")

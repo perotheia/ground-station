@@ -43,6 +43,7 @@ services:
     container_name: gs-api
     volumes:
       - ./fleet:/gs/fleet:ro      # clients.py loads fleet.py (the Mender client)
+      - "${TS_API_TOKEN_PATH:-/dev/null}:/run/secrets/ts_api_token:ro"   # unset = VPN join disabled
     environment:
       # The Mender GW (server DNS name on the mender network) + a PAT.
       MENDER_SERVER: "${MENDER_SERVER:-https://traefik}"
@@ -59,6 +60,9 @@ services:
       # colony-api (the BASE deployment authority) — gs-api fans /api/deployments
       # out to BOTH Mender (app) and this; the base-state mirror writes Mender tags.
       COLONY_API: "${COLONY_API:-http://colony-api:8081}"
+      # the fleet VPN backend (api/gs_api/vpn.py): the Tailscale API token as a 0600 FILE, mounted read-only
+      TS_API_TOKEN_FILE: /run/secrets/ts_api_token
+      TS_TAILNET: "${TS_TAILNET:--}"
       COLONY_API_KEY: "${COLONY_API_KEY:-}"
       # The com aggregator answering ListMachines (cluster Observability presence +
       # the base-state mirror's rig→device map). The central board's com.
