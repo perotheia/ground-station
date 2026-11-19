@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import { api } from '../api'
-import { usePoll } from '../App'
+import { usePoll, useDeploymentDevices } from '../App'
 import { CreateTargetModal } from '../components/CreateTargetModal'
 
 // The Deployment board — Update Factory's 3-column heart, retargeted to our two
@@ -315,8 +315,12 @@ function groupDeployments(rows) {
   })).sort((a, b) => Math.max(...b.items.map(epochOf)) - Math.max(...a.items.map(epochOf)))
 }
 
-function ActionHistory({ targetName }) {
+function ActionHistory({ targetName, targetId }) {
   const { data, refresh } = usePoll(() => api.deployments(), [], 4000)
+  // a selected target: an app (Mender) deployment is its history only when the
+  // device is in the deployment's DEVICE LIST (not when the name mentions it).
+  const appDeps = (data?.deployments || []).filter((d) => d.authority === 'app')
+  const depDevices = useDeploymentDevices(appDeps, !!targetId)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState({})           // group key → expanded?
   // GLOBAL cleared-before epoch (not per-target — one shared surface; a deleted
@@ -340,7 +344,7 @@ function ActionHistory({ targetName }) {
   // TOGGLE filter: a selected target scopes the view; deselect → global.
   if (targetName) {
     rows = rows.filter((d) => (d.authority === 'base' && d.rig === targetName)
-      || (d.authority === 'app' && String(d.name || '').includes(targetName)))
+      || (d.authority === 'app' && (depDevices[d.id] || []).some((x) => x.id === targetId)))
   }
   if (clearedBefore) rows = rows.filter((d) => d.authority !== 'app' || epochOf(d) > clearedBefore)
   const groups = groupDeployments(rows).slice(0, 40)
@@ -563,7 +567,7 @@ export function Deployment() {
       <div className="flex-1 grid grid-cols-3 grid-rows-1 gap-2 min-h-0">
         <Targets sel={selTarget} setSel={setSelTarget} />
         <DistributionsColumn sel={selDist} setSel={setSelDist} />
-        <ActionHistory targetName={target?.name} />
+        <ActionHistory targetName={target?.name} targetId={target?.id} />
       </div>
       {showDeploy && selDist && <DeployDistDialog dist={selDist} devices={devices}
         onClose={() => setShowDeploy(false)}

@@ -39,6 +39,8 @@ export const api = {
   cancelAction: (id, authority) =>
     call('/deployments/cancel', { method: 'POST', body: JSON.stringify({ id, authority }) }),
   deployment: (id) => call(`/deployments/${id}`),
+  // the devices of a Mender deployment (who it touched + each device's status)
+  deploymentDevices: (id) => call(`/deployments/${id}/devices`),
   artifacts: () => call('/deployments/artifacts/list'),
   createDeployment: (artifact_name, group, name) =>
     call('/deployments', { method: 'POST', body: JSON.stringify({ artifact_name, group, name }) }),

@@ -99,6 +99,40 @@ export default function App() {
   )
 }
 
+// Per-deployment device lists (Mender /deployments/{id}/devices), cached for the
+// session: a finished/aborted deployment's list never changes; a live one is
+// re-read when its status or statistics change. Returns { [dep id]: devices[] }.
+const _depDevices = new Map()        // dep id -> { devices, final }
+const _depInflight = new Set()
+export function useDeploymentDevices(deps, enabled = true) {
+  const [, bump] = useState(0)
+  const key = enabled
+    ? deps.map((d) => `${d.id}:${d.status}:${JSON.stringify(d.statistics?.status || '')}`).join(',')
+    : ''
+  useEffect(() => {
+    if (!enabled) return
+    let live = true
+    for (const d of deps) {
+      const hit = _depDevices.get(d.id)
+      if ((hit && hit.final) || _depInflight.has(d.id)) continue
+      _depInflight.add(d.id)
+      api.deploymentDevices(d.id)
+        .then((r) => {
+          _depDevices.set(d.id, { devices: r?.devices || [],
+                                  final: ['finished', 'aborted'].includes(d.status) })
+          if (live) bump((n) => n + 1)
+        })
+        .catch(() => {})
+        .finally(() => _depInflight.delete(d.id))
+    }
+    return () => { live = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+  const out = {}
+  if (enabled) for (const d of deps) { const h = _depDevices.get(d.id); if (h) out[d.id] = h.devices }
+  return out
+}
+
 // shared polling hook — keeps the dashboard live (Mender-like auto-refresh)
 export function usePoll(fn, deps = [], intervalMs = 8000) {
   const [data, setData] = useState(null)

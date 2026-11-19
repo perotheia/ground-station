@@ -200,13 +200,32 @@ def deployment(dep_id: str) -> dict:
         raise HTTPException(status_code=502, detail=f"mender deployment {dep_id}: {e}")
 
 
+# A deployment's device list, cached once every device in it is in a terminal
+# state (it never changes after that). The OTA history matches a deployment to a
+# device by THIS list, not by the deployment's name.
+_DEVICE_TERMINAL = {"success", "failure", "aborted", "noartifact",
+                    "already-installed", "decommissioned"}
+_device_list_cache: dict[str, list] = {}
+
+
+def deployment_device_list(m, dep_id: str) -> list[dict]:
+    """The devices of a Mender deployment ([{id, status, log, ...}]), cached when final."""
+    hit = _device_list_cache.get(dep_id)
+    if hit is not None:
+        return hit
+    rows = m.deployment_devices(dep_id) or []
+    if rows and all(r.get("status") in _DEVICE_TERMINAL for r in rows):
+        _device_list_cache[dep_id] = rows
+    return rows
+
+
 @router.get("/{dep_id}/devices")
 def deployment_devices(dep_id: str) -> dict:
     """Per-device status within a Mender deployment — WHICH device is failing,
     not just the rollup counts. (Mender API detail the GUI summary hides.)"""
     s = settings()
     try:
-        return {"devices": mender_client(s).deployment_devices(dep_id)}
+        return {"devices": deployment_device_list(mender_client(s), dep_id)}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"mender devices {dep_id}: {e}")
 

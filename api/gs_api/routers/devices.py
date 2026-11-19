@@ -789,17 +789,22 @@ def device_timeline(device_id: str) -> dict:
         errors["inventory"] = str(e)
 
     # ── APP plane: Mender deployments that included this device ──────────────
+    # A deployment belongs to this device's history only when the device is in
+    # the deployment's DEVICE LIST (Mender /deployments/{id}/devices, cached once
+    # final) — never because the deployment simply has devices.
+    from .deployments import deployment_device_list
     try:
         m = mender_client(s)
         st, data, _ = m._req("GET", f"{m.dep}?per_page=100")  # noqa: SLF001
         if st == 200:
             for d in json.loads(data or b"[]"):
-                devs = d.get("device_count") or 0
-                # the deployment's per-device list (if Mender returns it inline)
-                touched = device_id in (d.get("devices") or [])
-                # else match by artifact/group heuristically — fall back to "all
-                # accepted in group" being the deployment's target; keep it simple:
-                if touched or devs:
+                try:
+                    dlist = deployment_device_list(m, d.get("id"))
+                except Exception as e:  # noqa: BLE001
+                    errors["app"] = f"device list of {d.get('id')}: {e}"
+                    continue
+                touched = any(x.get("id") == device_id for x in dlist)
+                if touched:
                     events.append({
                         "authority": "app", "kind": "deployment",
                         "title": d.get("name") or d.get("artifact_name") or d.get("id"),
