@@ -4,7 +4,7 @@ Operator path tested in headless Chromium (Playwright) against the GS on panzer 
 through a tunnel from taycann), with the real BeagleBone AI-64 `ai64-proto` (Debian 13). The SK-TDA4VM was
 powered off for the night: its steps are a ready-to-run script (section 5) and part of the walkthrough (section 6).
 
-State after the night: ground-station main `84669ce`, colony main `044b45e`, theia main `2fd61510`,
+State after the night: ground-station main (this doc), colony main `e57ac2b`, theia main `8c492c98` (runtime 0.3.1 on the AI-64),
 perotheia/mender branch `arago-5.2`, chariot_ws `2ca0e30`. Spec: subject s-1aab5b21 `design/ui-provisioning-spec.md`.
 
 ## 1. What the operator has now (no curl, no ssh)
@@ -38,6 +38,9 @@ snapshots `ai64-guards.sh` -> `ai64-before.txt`, `ai64-after-*.txt`.
 | T6 page reload during a run -> the drawer re-opens | PASS | 27, 28 |
 | T7 Deploy runtime 0.3.0 on the AI-64 -> success, com mTLS | PASS (after D5) | 36-40 (30-33 = the defect) |
 | T8 OTA history: device history + Rollouts name "rolled back to base-0.1.0-trixie-arm64" | PASS (after D6) | 41, 42 |
+| T7b Deploy runtime 0.3.1 (theia 8c492c98: roles + no-keys), then 0.3.0 (downgrade), then 0.3.1 | PASS (after D7): supervisor restarted onto each version (19:36, 19:39 UTC), no deleted binaries running, com mTLS, r5f running, ttyRPMSG0 present, ~1.9 GB free | `t7-0.3.*-c.out` |
+| Roles live on 0.3.1: operator cert ListMachines | OK | - |
+| Roles live: operator cert UcmView.RequestUpdate | `PERMISSION_DENIED: needs role gs; caller 'roles-check' (role operator from uri)` | - |
 
 Guard notes: four files under `/usr/lib/firmware/zephyr` + `/boot/firmware/overlays/k3-j721e-ai64-r5fss1-bench.dtbo`
 changed between 16:00 and 18:56 UTC, between our runs and not by colony (it has no firmware task): the R5F bench
@@ -52,6 +55,7 @@ work. `/dev/ttyRPMSG0` mtime moved at 19:12:56 UTC = `/opt/pascal-tools/mavcli` 
 | D4 | every re-provision restarted etcd under the running stack | colony `1586cfa`: restart only on a config change | `tests/test_no_unconditional_restarts.py` (lints all plays) |
 | D5 | Deploy runtime sent "0.3.0", colony downloads by plane key "0.3.0-trixie-arm64": download failed | GS `84669ce`: resolve to the key, refuse unknown versions up front | `test_runtime_version_resolves_to_the_plane_key`, `test_deploy_sends_the_plane_key` |
 | D6 | the device's Action History showed a bare NOK for the rolled-back v2 | GS `84669ce`: "rolled back to <release>" per device | live T8 (`data-testid=rolled-back`) |
+| D7 | Deploy runtime 0.3.1 said success, the debs were installed, but every Theia process kept running the DELETED 0.3.0 binaries (no restart: two tasks registered `_dpkg`, the skipped opkg one overwrote it); a downgrade would have failed (apt without --allow-downgrades) | colony `e57ac2b`: one `_runtime_changed` from the installed versions before/after; same version = no restart; downgrades allowed | `tests/test_play_registers.py` + live T7b |
 Found in review / by the coders, before going live:
 | R1 | auto-accept by identity only: anyone reaching the gateway could claim a name or take over an accepted device | GS `f068cbb`, colony `0c97f32` (key read over ssh) | `test_auto_accept_requires_key_match`, `test_no_second_set_takeover`, `test_accept_with_matching_key` |
 | R2 | the 64 KB log cap could cut the key line | colony `4db4cb7` (`mender_pubkey` record field) | `tests/test_runner_progress.py::test_progress_advances_while_running` |
@@ -67,11 +71,24 @@ Found in review / by the coders, before going live:
 | (2c) the SK OTA campaign | ready (section 5); needs the SK on | - |
 | (2d) mender-server fork | no server-side v4 bug hit tonight: fork unchanged | - |
 | (3) reachable address, not the first IPv4 | GS `api/gs_api/addressing.py`: remote_ip tag, then local_ip, else an explicit error; used by ucm, campaign, deployments | `test_reachable_address_everywhere` |
-| (4F) com per-RPC roles | theia `9c14a925`: role from the verified cert (URI SAN, else OU), one table, unknown RPC denied, debug RPCs only with THEIA_COM_DEBUG_RPCS=1 | `//services/com/test:com_roles_test` (353 checks); live on the AI-64 with 0.3.1 (section 7) |
+| (4F) com per-RPC roles | theia `9c14a925`: role from the verified cert (URI SAN, else OU), one table, unknown RPC denied, debug RPCs only with THEIA_COM_DEBUG_RPCS=1; LIVE on the AI-64 (0.3.1): operator observe OK, operator RequestUpdate PERMISSION_DENIED | `//services/com/test:com_roles_test` (353 checks) |
 | (4G) e2e rigs with fleet certs | colony `044b45e`: SeaweedFS, digests, throwaway CA via the normal pki-enroll path, no com_insecure; full story green locally; the GitHub workflow was disabled for inactivity: re-enabled + dispatched | `helpers/com-mtls-check.py`: `mtls_operator_list_machines`, `plaintext_refused`, `tls_without_client_cert_refused`, `foreign_ca_client_cert_refused`, `wrong_rig_name_refused`; `com_insecure_absent`, `unsigned_artifact_refused` |
 | (4H) no key material in packages | theia `2fd61510`: one scanner on release, release-swp, release-role, dist, build-debs, models push, the deb rule, CI release-deb; legacy `current/config/certs` no longer read | `tools/test_no_keys_gate.py` (58) |
 | (4E) supervisor-gui on mTLS | pascal's: operator cert recipe + AI-64 machines.json posted on s-1aab5b21 | - |
 | (5) MAVLink signing | design note chariot_ws `docs/MAVLINK-SECURITY.md` (`2ca0e30`) with acceptance tests per step | named in the note (`test_signing`, `sitl_signed_link`, `test_mavctrl_allowlist`, `test_gcs_keys`) |
+
+## 4b. Adversarial review of what was merged (one pass, then fixed)
+| finding | fix | regression test |
+|---|---|---|
+| HIGH: Mender tag / plane values reached colony's space-joined `-e k=v` -> ansible var injection, code on the controller | GS `29e6165` validates tags/journal/plane key before colony; colony `2e399b4` validates rig/host/role/extra (no `ansible_*` but ansible_user, no CLI-owned keys) and passes extra vars as ONE JSON `-e` | `test_tag_values_validated_before_deploy`, `test_plane_key_validated`, colony `test_extra_vars_are_json_not_kv`, `test_create_rejects_bad_host_role_extra` |
+| HIGH: auto-accept took a matching-key set for a name already enrolled with ANOTHER key (Add device pointed at a different board) | GS `29e6165`: no accept, no tags, "rotate the key manually" | `test_no_auto_accept_when_name_enrolled_with_another_key` |
+| MEDIUM: an older colony's 422 echoed the VPN auth key, relayed to the UI | GS never relays colony bodies; colony 422s carry no `input` | `test_colony_error_body_never_relayed`, colony `test_validation_error_has_no_input` |
+| MEDIUM: opkg index `file` interpolated into a root shell | colony `f80a22f`: pattern-checked + quoted | `test/opkg-mender/run.sh` case 3g (53/53) |
+| MEDIUM: etcd / supervisor bounced on every run on systemd-less rigs | colony `f2421c5` | `tests/test_no_unconditional_restarts.py` (now also kill/relaunch shells) |
+| LOW: minted VPN key not revoked on refusal; secrets kept after abort/prune; device match in any attribute scope | GS `29e6165`, colony `2e399b4` | GS tests for the 409 revoke + identity scope |
+Left: the old `/api/deployments/base` path does not revoke its minted key on refusal.
+After the merge (GS `c8cd705`, colony `0abe6ce`) the live pass was repeated: list, T1, T3-T8 all PASS, no restart
+of supervisor/etcd for the same version, AI-64 guards unchanged.
 
 ## 5. SK steps, ready to run (the SK was off)
 `/bigdata/work/architect/ui-test/sk-morning.sh check` (reachability + guard snapshot), then `... t2` (Add device
