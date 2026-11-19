@@ -272,6 +272,7 @@ class BaseDeployRequest(BaseModel):
     ip: str | None = None            # explicit target IP (preauth device w/ no
                                      # local_ip → the Deploy prompt supplies it)
     device_id: str | None = None     # the Mender device, to record local_ip on
+    user: str | None = None          # the ssh user on the rig (ansible_user); colony's inventory default otherwise
     role: str | None = None          # the S3 manifest slice (master | zonal); provision defaults to master
     runtime_version: str | None = None  # provision/orchestrate: the theia-runtime build to take from S3
     scope: dict | None = None        # cleanup SCOPE {app, runtime, mender} (bools);
@@ -312,6 +313,10 @@ def deploy_base(req: BaseDeployRequest) -> dict:
         extra["role"] = req.role or "master"
         if req.runtime_version:
             extra["runtime_version"] = req.runtime_version
+        if req.user:
+            if not req.user.replace("-", "").replace("_", "").isalnum():
+                raise HTTPException(status_code=422, detail="user: letters, digits, - and _ only")
+            extra["ansible_user"] = req.user
     # Resolve the host: the explicit ip, else the device's reachable_ip from Mender
     # inventory. colony is registry-free — without a host it 404s "no rig in the
     # registry", which otherwise bubbles up as a raw 500 (the GS UI then chokes on
