@@ -11,6 +11,25 @@ import urllib.error
 import urllib.request
 
 
+class ColonyError(RuntimeError):
+    """A colony-api answer that is not a success: carries the HTTP status and the parsed body."""
+
+    def __init__(self, what: str, status: int, data: bytes) -> None:
+        self.status = status
+        try:
+            self.body = json.loads(data or b"{}")
+        except ValueError:
+            self.body = {"detail": data.decode(errors="replace")[:400]}
+        if not isinstance(self.body, dict):
+            self.body = {"detail": self.body}
+        super().__init__(f"colony {what} [{status}]: {data.decode(errors='replace')[:200]}")
+
+    @property
+    def detail(self) -> str:
+        d = self.body.get("detail", "")
+        return d if isinstance(d, str) else json.dumps(d)
+
+
 class Colony:
     def __init__(self, base: str, key: str = "") -> None:
         self.base = base.rstrip("/")
@@ -45,7 +64,7 @@ class Colony:
     def deployment(self, did: str) -> dict:
         st, data = self._req("GET", f"/deployments/{did}")
         if st != 200:
-            raise RuntimeError(f"colony deployment [{st}]: {data.decode(errors='replace')[:200]}")
+            raise ColonyError("deployment", st, data)
         return json.loads(data or b"{}")
 
     def create(self, rig: str, kind: str = "orchestrate",
@@ -57,7 +76,7 @@ class Colony:
             body["secrets"] = secrets
         st, data = self._req("POST", "/deployments", body)
         if st not in (200, 201):
-            raise RuntimeError(f"colony create [{st}]: {data.decode(errors='replace')[:200]}")
+            raise ColonyError("create", st, data)          # 409: the rig already has an active run
         return json.loads(data or b"{}")
 
     def abort(self, did: str) -> dict:
@@ -85,6 +104,24 @@ class Colony:
         if st != 200:
             raise RuntimeError(f"colony log [{st}]: {data.decode(errors='replace')[:200]}")
         return json.loads(data or b"{}").get("log", "")
+
+
+    def probe(self, host: str, user: str | None = None, timeout: float = 30.0) -> dict:
+        """GET /probe: one ssh to <user>@<host> with the fleet key (ConnectTimeout 8 s). Raises ColonyError
+        carrying ssh's error text on failure (502) or a refused host/user (422)."""
+        from urllib.parse import urlencode
+        q = {"host": host, **({"user": user} if user else {})}
+        st, data = self._req("GET", f"/probe?{urlencode(q)}", timeout=timeout)
+        if st != 200:
+            raise ColonyError("probe", st, data)
+        return json.loads(data or b"{}")
+
+    def pubkey(self) -> str:
+        """The fleet ssh public key (the one colony ssh's the rigs with)."""
+        st, data = self._req("GET", "/pubkey")
+        if st != 200:
+            raise ColonyError("pubkey", st, data)
+        return json.loads(data or b"{}").get("pubkey", "")
 
 
 def colony_client(s) -> Colony:
