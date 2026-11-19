@@ -8,8 +8,8 @@ that runs IN PARALLEL with the Mender transport plane. The OTA-client flow:
      PHM-verify → ACTIVE/ROLLBACK).
   3. GS polls UcmProgress to follow the FSM state (the observability in Layer 3).
 
-A rig is addressed by its com endpoint (<ip>:7700). We resolve <ip> from the
-device's Mender inventory (ipv4_*) so the caller names a device id, not an ip.
+A rig is addressed by its com endpoint (<ip>:7700). <ip> is the device's REACHABLE address
+(gs_api.addressing: remote_ip, then local_ip) so the caller names a device id, not an ip.
 """
 from __future__ import annotations
 
@@ -17,32 +17,26 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import com_client
+from ..addressing import COM_PORT, NoReachableAddress, com_endpoint
 from ..auth import require_key
 from ..clients import mender_client
 from ..settings import settings
 
 router = APIRouter(prefix="/api/ucm", tags=["ucm"])
 
-COM_PORT = 7700
-
 
 def _rig_endpoint(device_id: str) -> str:
-    """Resolve a Mender device id → its com gRPC endpoint (<ip>:7700)."""
+    """Resolve a Mender device id → its com gRPC endpoint (<ip>:7700).
+    The address is the device's REACHABLE one (addressing.com_endpoint: remote_ip, then local_ip), never an
+    inventory ipv4_* interface."""
     s = settings()
     for d in mender_client(s).devices():
         if d.get("id") != device_id:
             continue
-        attrs = {a["name"]: a["value"] for a in d.get("attributes", []) or []}
-        ip = None
-        for k, v in attrs.items():
-            if k.startswith("ipv4") and v:
-                ip = v[0] if isinstance(v, list) else v
-                ip = str(ip).split("/")[0]   # strip CIDR
-                break
-        if not ip:
-            raise HTTPException(status_code=400,
-                                detail=f"device {device_id} reports no ipv4 in inventory")
-        return f"{ip}:{COM_PORT}"
+        try:
+            return com_endpoint(d, COM_PORT)
+        except NoReachableAddress as e:
+            raise HTTPException(status_code=400, detail=str(e))
     raise HTTPException(status_code=404, detail="device not found")
 
 

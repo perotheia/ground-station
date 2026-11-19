@@ -153,6 +153,13 @@ def _channel(target: str):
     import grpc  # noqa: PLC0415
     if os.environ.get("GS_COM_INSECURE", "0") == "1":
         return grpc.insecure_channel(target)
+    return _tls_channel(target)
+
+
+def _tls_channel(target: str):
+    """The (mutual) TLS channel, never plaintext: the fleet PKI identity, else THEIA_COM_TLS_CA; raises when
+    neither is configured."""
+    import grpc  # noqa: PLC0415
     if os.environ.get("GS_PKI_DIR"):
         from .routers.pki import FLEET_DNS, gs_client_identity  # noqa: PLC0415
         ca, key, cert = gs_client_identity()
@@ -164,6 +171,42 @@ def _channel(target: str):
         return grpc.secure_channel(target, grpc.ssl_channel_credentials(Path(ca).read_bytes()))
     raise RuntimeError("no fleet PKI (GS_PKI_DIR) and no THEIA_COM_TLS_CA: refusing a plaintext channel to a rig "
                        "(GS_COM_INSECURE=1 for a debug rig)")
+
+
+def com_state(target: str | None, timeout: float = 4.0) -> dict:
+    """The com state of a rig for the fleet list: a ListMachines over MUTUAL TLS to <target> (host:7700)
+    answered = "mtls"; else a PLAINTEXT ListMachines answered (the rig serves plaintext, the TLS handshake
+    fails) = "plaintext"; connection refused / timeout = "down"; anything else (no fleet PKI on the GS, a
+    certificate the rig rejects) = "unknown". Ignores GS_COM_INSECURE: this reports what the rig serves.
+    Returns {state, detail}."""
+    if not target:
+        return {"state": "unknown", "detail": "no reachable address (no remote_ip / local_ip)"}
+    import grpc  # noqa: PLC0415
+    _ensure_sv_stubs()
+
+    def _ask(ch):
+        with ch:
+            _svpbg.SupervisorViewStub(ch).ListMachines(_svpb.ListMachinesCall(), timeout=timeout)
+
+    try:
+        _ask(_tls_channel(target))
+        return {"state": "mtls", "detail": f"{target}: ListMachines over mutual TLS"}
+    except Exception as e:  # noqa: BLE001
+        tls_err = e
+    try:
+        _ask(grpc.insecure_channel(target))
+        return {"state": "plaintext", "detail": f"{target} serves PLAINTEXT com (no mutual TLS)"}
+    except Exception as e:  # noqa: BLE001
+        plain_err = e
+    code = getattr(plain_err, "code", None)
+    code = code() if callable(code) else None
+    text = short_error(plain_err).lower()
+    if code == grpc.StatusCode.DEADLINE_EXCEEDED or (
+            code == grpc.StatusCode.UNAVAILABLE and ("connect" in text or "unreachable" in text)):
+        return {"state": "down", "detail": f"{target}: {short_error(plain_err)}"}
+    if not hasattr(tls_err, "code"):         # the GS has no fleet PKI: it cannot tell mTLS from a closed door
+        return {"state": "unknown", "detail": f"{target}: {short_error(tls_err)}"}
+    return {"state": "unknown", "detail": f"{target}: mTLS {short_error(tls_err)}; plaintext {short_error(plain_err)}"}
 
 
 def short_error(e: Exception) -> str:
