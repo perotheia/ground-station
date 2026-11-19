@@ -17,7 +17,12 @@ async function call(path, opts = {}) {
   if (!res.ok) {
     const msg = (body && body.detail) || (typeof body === 'string' && body)
       || `${res.status} ${res.statusText}`
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    // the status + parsed body ride along: the provisioning UI reads the 422
+    // preflight reason and the 409 run_id from them.
+    err.status = res.status
+    err.body = body
+    throw err
   }
   return body
 }
@@ -86,7 +91,23 @@ export const api = {
   // pin guards a device from deletion (unpin before delete)
   pinDevice: (id, pinned) =>
     call(`/devices/${id}/pin`, { method: 'POST', body: JSON.stringify({ pinned }) }),
+  // ── Provisioning (spec ui-provisioning §0): ONE identity = the device name ──
+  // Add device = preflight + provision + auto-accept; 202 {run_id, rig, kind}.
+  addRig: (name, address, user, role, runtime_version) =>
+    call('/rigs', { method: 'POST',
+      body: JSON.stringify({ name, address, user, role, ...(runtime_version ? { runtime_version } : {}) }) }),
+  deployRig: (name, runtime_version) =>
+    call(`/rigs/${encodeURIComponent(name)}/deploy`, { method: 'POST', body: JSON.stringify({ runtime_version }) }),
+  run: (id) => call(`/runs/${encodeURIComponent(id)}`),
+  // the runs of a rig, newest first (a bare list; {runs:[..]} accepted too)
+  runs: (rig) => call(`/runs?rig=${encodeURIComponent(rig)}`)
+    .then((r) => (Array.isArray(r) ? r : (r?.runs || []))),
+  // ONE list: Mender devices + colony-only rigs (bare list; {fleet:[..]} accepted)
+  fleet: () => call('/fleet').then((r) => (Array.isArray(r) ? r : (r?.fleet || r?.devices || []))),
+
   // ── Create New Target (enrolment) — SSH-probe a host + the Type options ───
+  // (probe / setIdentity / preauthorize / setIp / addToVpn are HIDDEN from the UI
+  // since the provisioning path; the backend endpoints stay for the CLI.)
   probe: (host, user) => call(`/devices/probe?host=${encodeURIComponent(host)}`
     + (user ? `&user=${encodeURIComponent(user)}` : '')),
   deviceTypes: () => call('/devices/types'),
