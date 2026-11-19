@@ -144,9 +144,9 @@ function useRun(runId, onRunState) {
   return { run, error }
 }
 
-const ACCEPTED_TEXT = (v) => {
-  if (v === true) return ['accepted in Mender (identity = the device name)', 'text-ok']
-  if (v === false) return ['NOT accepted: the device did not check in to Mender within 120 s (it stays pending; accept it in Fleet → Auth pending)', 'text-amber-300']
+const ACCEPTED_TEXT = (v, note) => {
+  if (v === true) return ['accepted in Mender (identity = the device name, key read from the board)', 'text-ok']
+  if (v === false) return [`NOT accepted: ${note || 'no matching Mender auth set'}`, 'text-amber-300']
   if (v === 'not-a-mender-rig') return ['no Mender on this rig (by design: opkg rig)', 'text-slate-300']
   return null
 }
@@ -174,7 +174,7 @@ export function RunDrawer({ runId, onClose, onRunState }) {
   const pct = step && step.total_estimate
     ? Math.min(100, Math.round((100 * (isFinal(status) ? step.total_estimate : Math.max(0, (step.index || 0) - 1))) / step.total_estimate))
     : null
-  const acc = run ? ACCEPTED_TEXT(run.accepted) : null
+  const acc = run ? ACCEPTED_TEXT(run.accepted, run.note) : null
   const skipped = run?.skipped_by_design || []
 
   return (

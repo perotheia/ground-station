@@ -92,6 +92,21 @@ def vpn_ip(log: str) -> str | None:
     return m.group(1) if m else None
 
 
+def pubkey_field(v) -> str | None:
+    """colony's record field `mender_pubkey` (base64 of the PEM, as in the COLONY_MENDER_PUBKEY line) -> PEM.
+    A PEM given as is passes through."""
+    import base64
+    if not isinstance(v, str) or not v.strip():
+        return None
+    if "PUBLIC KEY" in v:
+        return v
+    try:
+        pem = base64.b64decode(v.strip(), validate=True).decode("ascii")
+    except ValueError:
+        return None
+    return pem if "PUBLIC KEY" in pem else None
+
+
 def mender_pubkey(log: str) -> str | None:
     """The rig's Mender PUBLIC key (PEM) that provision read over ssh (colony mender-enroll.yml:
     `COLONY_MENDER_PUBKEY <machine> <base64 of the PEM>`); the last one in the log. None when absent."""

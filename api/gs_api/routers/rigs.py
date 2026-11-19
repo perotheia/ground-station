@@ -421,7 +421,7 @@ def _after_provision(col, rec: dict, f: dict) -> None:
         f["note"] = "opkg rig: base plane only, no Mender client (nothing to accept)"
         return
     m = _mender()
-    key = rec.get("mender_pubkey") or runlog.mender_pubkey(_log(col, rec))
+    key = runlog.pubkey_field(rec.get("mender_pubkey")) or runlog.mender_pubkey(_log(col, rec))
     ok, dev_id, why = auto_accept(m, rig, key)
     f["accepted"] = ok
     if not ok:

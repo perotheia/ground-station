@@ -302,6 +302,19 @@ def test_mender_pubkey_from_a_newer_colony_field(wire, colony, mender):
     assert _final(c, run_id)["accepted"] is True and mender.accepted == [(pend["id"], _set(pend))]
 
 
+def test_mender_pubkey_field_as_colony_sends_it(wire, colony, mender):
+    """Regression (live T1 2026-11-19): colony's `mender_pubkey` field is base64 of the PEM (as in the log line);
+    the GS read it as a PEM, found no key and did not accept. The provision log here has NO key line."""
+    import base64
+    key = new_pubkey()
+    c = wire()
+    run_id = _add(c, name="ai64-b").json()["run_id"]
+    pend = mender.add_pending("ai64-b", pubkey=key)
+    log = "\n".join(l for l in provision_log("ai64-b").splitlines() if "COLONY_MENDER_PUBKEY" not in l)
+    colony.finish(run_id, log=log, mender_pubkey=base64.b64encode(key.encode()).decode())
+    assert _final(c, run_id)["accepted"] is True and mender.accepted == [(pend["id"], _set(pend))]
+
+
 def test_opkg_rig_is_not_accepted(wire, colony, mender):
     c = wire()
     run_id = _add(c, name="sk-new", user="root").json()["run_id"]
