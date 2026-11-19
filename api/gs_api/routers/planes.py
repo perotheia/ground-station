@@ -52,7 +52,8 @@ def _deployed_versions(s) -> set[str]:
         pass
     try:
         for d in colony_client(s).deployments():
-            rv = d.get("runtime_version")
+            # colony keeps the runtime it installed in the deployment's `extra`
+            rv = d.get("runtime_version") or (d.get("extra") or {}).get("runtime_version")
             if rv:
                 locked.add(str(rv))
     except Exception:  # noqa: BLE001

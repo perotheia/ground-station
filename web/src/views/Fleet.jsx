@@ -68,7 +68,8 @@ function TimelineEvent({ e }) {
         {e.status && <span className="text-[11px] text-muted ml-auto">{typeof e.status === "string" ? e.status : JSON.stringify(e.status)}</span>}
       </div>
       {e.detail && <div className="text-[11px] text-muted">{typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail)}</div>}
-      {e.ts && <div className="text-[10px] text-muted/70">{String(e.ts)}</div>}
+      {e.ts != null && <div className="text-[10px] text-muted/70">
+        {typeof e.ts === 'number' ? new Date(e.ts * 1000).toLocaleString() : String(e.ts)}</div>}
       {open && (
         <div className="mt-1 rounded bg-black/40 border border-edge/50 p-2">
           {err && <div className="text-[11px] text-red-400">log: {err}</div>}

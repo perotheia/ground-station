@@ -32,6 +32,20 @@ def _aggregator() -> str:
     return os.environ.get("GS_COM_AGGREGATOR", "")
 
 
+def _epoch(ts) -> float | None:
+    """A timestamp as seconds since the epoch: colony gives a float epoch, Mender an
+    ISO-8601 string (…Z). None when absent or unreadable."""
+    if ts is None or ts == "":
+        return None
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _scalar(v):
     """Mender attribute values can be a scalar OR a list (multi-valued, e.g. a NIC
     with several IPs). Coerce to a single hashable/renderable value for the UI:
@@ -835,9 +849,10 @@ def device_timeline(device_id: str) -> dict:
                     st = d.get("status")
                 if isinstance(st, dict):
                     st = ", ".join(f"{k}={v}" for k, v in st.items() if v) or "queued"
+                rv = d.get("runtime_version") or (d.get("extra") or {}).get("runtime_version") or ""
                 events.append({
                     "authority": "base", "kind": "deployment",
-                    "title": f"{d.get('kind', 'orchestrate')} {d.get('runtime_version', '')}".strip(),
+                    "title": f"{d.get('kind', 'orchestrate')} {rv}".strip(),
                     "detail": st or "?",
                     "ts": d.get("created") or d.get("created_ts"),
                     "status": st,
@@ -846,7 +861,11 @@ def device_timeline(device_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         errors["base"] = str(e)
 
-    events.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
+    # one clock: every ts as epoch seconds (ISO from Mender, float from colony),
+    # sorted numerically, newest first; the UI renders it in local time.
+    for e in events:
+        e["ts"] = _epoch(e.get("ts"))
+    events.sort(key=lambda e: e.get("ts") or 0.0, reverse=True)
     out: dict = {"device_id": device_id, "name": dev_name, "fleet": fleet,
                  "events": events, "count": len(events)}
     if errors:
