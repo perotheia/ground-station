@@ -6,17 +6,28 @@ by default (dev); pin GS_CORS_ORIGINS in prod. The web UI is served separately
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
-from .routers import campaign, deployments, devices, planes, ucm
+from .routers import campaign, deployments, devices, planes, rigs, ucm
 from .settings import settings
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # resume the followers of the provisioning runs this GS started (Mender auto-accept after a restart)
+    import threading
+    threading.Thread(target=rigs.resume_followers, daemon=True, name="resume-followers").start()
+    yield
 
 
 def create_app() -> FastAPI:
     s = settings()
     app = FastAPI(
+        lifespan=_lifespan,
         title="Theia Ground Station",
         version=__version__,
         description="Fleet operator backend — Mender OTA control + the Theia "
@@ -62,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(planes.router)
     app.include_router(ucm.router)
     app.include_router(campaign.router)
+    app.include_router(rigs.router)          # Add device / Deploy runtime / runs / ONE fleet list
     from .routers import pki
     app.include_router(pki.router)
     return app
