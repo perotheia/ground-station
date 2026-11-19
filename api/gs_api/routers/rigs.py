@@ -12,7 +12,9 @@ memory. gs-api keeps only what it is DOING right now (a preflight in progress, a
 device in Mender after a successful provision); a follower is resumed from the journal after a restart.
 
 After a successful provision the GS accepts the device's pending Mender auth set automatically, but ONLY the
-set whose identity device_id == the rig name (polling up to ACCEPT_TIMEOUT s), then writes the tags (name,
+set whose identity device_id == the rig name AND whose public key equals the key provision read from the rig
+over ssh (COLONY_MENDER_PUBKEY; polling up to ACCEPT_TIMEOUT s; no key reported = no auto-accept, the run says
+"accept manually"), then writes the tags (name,
 role, rig_class, local_ip, remote_ip = the tailnet address, base fields). An opkg rig has no Mender client:
 no accept, accepted = "not-a-mender-rig".
 """
@@ -351,30 +353,47 @@ def list_runs(rig: str | None = None) -> list:
 
 
 # ── the follower: the GS half of a run (Mender accept + tags, the base-state mirror) ──
-def auto_accept(m, name: str, timeout: float = None, interval: float = None) -> tuple[bool, str | None]:
-    """Accept the pending Mender auth set whose identity device_id == `name` (exactly; never any other pending
-    set), polling until `timeout`. (True, devauth id) when accepted (or already accepted), (False, None)."""
+def auto_accept(m, name: str, pubkey_pem: str | None, timeout: float = None,
+                interval: float = None) -> tuple[bool, str | None, str | None]:
+    """Accept the rig's pending Mender auth set: ONLY a set whose identity device_id == `name` AND whose public
+    key equals `pubkey_pem` (the key provision read from the rig over ssh; compared as DER). The identity alone
+    is what the device CLAIMS (anyone reaching the gateway can claim it): never enough. A set with another key
+    is never accepted, also not for a device already accepted (no key takeover). Polls until `timeout`.
+    Returns (accepted, devauth id, reason when not accepted)."""
     timeout = ACCEPT_TIMEOUT if timeout is None else timeout
     interval = ACCEPT_POLL if interval is None else interval
+    want = runlog.key_der(pubkey_pem)
+    if want is None:
+        return False, None, ("the provision reported no Mender public key (COLONY_MENDER_PUBKEY): the GS does "
+                             "not accept by identity alone: accept manually after checking the device key")
     deadline = time.time() + timeout
+    other_key = False
     while True:
         try:
             for d in m.auth_devices():
                 idd = d.get("identity_data") or {}
                 if not isinstance(idd, dict) or idd.get("device_id") != name:
                     continue
-                pend = [a for a in (d.get("auth_sets") or []) if a.get("status") == "pending"
-                        and ((a.get("identity_data") or idd).get("device_id") == name)]
-                pend.sort(key=lambda a: str(a.get("ts") or ""), reverse=True)   # the newest key the rig sent
-                if pend:
-                    m.accept_device(d["id"], pend[0]["id"])
-                    return True, d["id"]
-                if d.get("status") == "accepted":
-                    return True, d["id"]
+                for a in d.get("auth_sets") or []:
+                    if (a.get("identity_data") or idd).get("device_id") != name:
+                        continue
+                    same = runlog.key_der(a.get("pubkey")) == want
+                    if a.get("status") == "accepted" and same:
+                        return True, d["id"], None                 # already accepted with the rig's own key
+                    if a.get("status") == "pending":
+                        if same:
+                            m.accept_device(d["id"], a["id"])
+                            return True, d["id"], None
+                        other_key = True
         except Exception:  # noqa: BLE001: Mender hiccup: try again until the deadline
             pass
         if time.time() >= deadline:
-            return False, None
+            why = (f"no pending Mender auth set with identity device_id={name} and the key the rig reported "
+                   f"within {int(timeout)} s")
+            if other_key:
+                why += ("; a pending set with this identity but ANOTHER key was NOT accepted (someone else may "
+                        "be claiming the name)")
+            return False, None, why + ": accept manually"
         time.sleep(interval)
 
 
@@ -396,11 +415,11 @@ def _after_provision(col, rec: dict, f: dict) -> None:
         f["note"] = "opkg rig: base plane only, no Mender client (nothing to accept)"
         return
     m = _mender()
-    ok, dev_id = auto_accept(m, rig)
+    key = rec.get("mender_pubkey") or runlog.mender_pubkey(_log(col, rec))
+    ok, dev_id, why = auto_accept(m, rig, key)
     f["accepted"] = ok
     if not ok:
-        f["note"] = (f"no pending Mender auth set with identity device_id={rig} within {int(ACCEPT_TIMEOUT)} s "
-                     "(is the Mender client on the rig running?)")
+        f["note"] = why
         return
     extra = rec.get("extra") or {}
     vip = rec.get("vpn_ip") or runlog.vpn_ip(_log(col, rec))

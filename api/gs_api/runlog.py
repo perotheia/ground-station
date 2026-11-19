@@ -13,6 +13,7 @@ _RESULT_RE = re.compile(r"^(?P<kind>ok|changed|skipping|failed|fatal|included|un
 _RECAP_RE = re.compile(r"^PLAY RECAP\b")
 _RIG_CLASS_RE = re.compile(r"rig_class=(?P<cls>[a-z]+); skipped by design: (?P<skips>[^\"\n]*)")
 _VPN_RE = re.compile(r"COLONY_VPN_IP \S+ (\d+\.\d+\.\d+\.\d+)")
+_MKEY_RE = re.compile(r"COLONY_MENDER_PUBKEY \S+ ([A-Za-z0-9+/=]{40,})")
 
 _RANK = {"skipped": 0, "ok": 1, "changed": 2, "failed": 3}
 _KIND = {"ok": "ok", "included": "ok", "changed": "changed", "skipping": "skipped",
@@ -89,6 +90,36 @@ def rig_class(log: str) -> tuple[str | None, list[str] | None]:
 def vpn_ip(log: str) -> str | None:
     m = _VPN_RE.search(log or "")
     return m.group(1) if m else None
+
+
+def mender_pubkey(log: str) -> str | None:
+    """The rig's Mender PUBLIC key (PEM) that provision read over ssh (colony mender-enroll.yml:
+    `COLONY_MENDER_PUBKEY <machine> <base64 of the PEM>`); the last one in the log. None when absent."""
+    import base64
+    hit = None
+    for hit in _MKEY_RE.finditer(log or ""):
+        pass
+    if not hit:
+        return None
+    try:
+        pem = base64.b64decode(hit.group(1), validate=True).decode("ascii")
+    except ValueError:
+        return None
+    return pem if "PUBLIC KEY" in pem else None
+
+
+def key_der(pem: str | None) -> bytes | None:
+    """A public key PEM normalised to its DER SubjectPublicKeyInfo (whitespace, line wrapping and the PEM
+    flavour do not matter); None when it is not a public key."""
+    if not pem or not isinstance(pem, str):
+        return None
+    from cryptography.hazmat.primitives import serialization
+    text = "\n".join(ln.strip() for ln in pem.strip().splitlines() if ln.strip()) + "\n"
+    try:
+        key = serialization.load_pem_public_key(text.encode())
+    except (ValueError, TypeError):
+        return None
+    return key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
 
 
 def colony_outcome(rec: dict) -> str:

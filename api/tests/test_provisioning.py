@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import GS_PUBKEY, KEY, FakeColony, FakeMender, provision_log, wait_for
+from conftest import GS_PUBKEY, KEY, FakeMender, new_pubkey, provision_log, wait_for
 
 AI64_ID = "94b200f0-edf7-432d-84d8-83d0ea49a750"
 AI64_VPN = "100.91.130.60"
@@ -153,42 +153,122 @@ def test_preflight_passes(wire, colony, sudo):
 
 
 # ── auto-accept ──────────────────────────────────────────────────────────────
+def _final(c, run_id):
+    return wait_for(lambda: (lambda j: j if j["status"] != "running" else None)(
+        c.get(f"/api/runs/{run_id}", headers=KEY).json()))
+
+
+def _set(d, i=-1):
+    return d["auth_sets"][i]["id"]
+
+
 def test_auto_accept_identity_only():
+    """Only the set of the rig's identity (exactly) AND the rig's key; never another pending set."""
     from gs_api.routers import rigs
+    key = new_pubkey()
     m = FakeMender()
-    other = m.add_pending("other-rig")
-    longer = m.add_pending("ai64-new-2")            # a name that merely CONTAINS the rig name
-    mac_only = m.add_pending(None, mac="24:76:25:a1:e7:ed")
-    target = m.add_pending("ai64-new")
-    ok, dev = rigs.auto_accept(m, "ai64-new", timeout=0, interval=0)
-    assert ok and dev == target["id"]
-    assert m.accepted == [(target["id"], target["auth_sets"][0]["id"])]
+    other = m.add_pending("other-rig", pubkey=key)        # the right key under another identity
+    longer = m.add_pending("ai64-new-2", pubkey=key)      # a name that merely CONTAINS the rig name
+    mac_only = m.add_pending(None, mac="24:76:25:a1:e7:ed", pubkey=key)
+    target = m.add_pending("ai64-new", pubkey=key)
+    ok, dev, why = rigs.auto_accept(m, "ai64-new", key, timeout=0, interval=0)
+    assert ok and dev == target["id"] and why is None
+    assert m.accepted == [(target["id"], _set(target))]
     for d in (other, longer, mac_only):
         assert next(x for x in m.auth if x["id"] == d["id"])["status"] == "pending"
 
     m2 = FakeMender()
-    m2.add_pending("other-rig")
-    m2.add_pending("ai64-new-2")
-    assert rigs.auto_accept(m2, "ai64-new", timeout=0, interval=0) == (False, None)
-    assert m2.accepted == []                           # never another pending set
+    m2.add_pending("other-rig", pubkey=key)
+    m2.add_pending("ai64-new-2", pubkey=key)
+    ok, dev, why = rigs.auto_accept(m2, "ai64-new", key, timeout=0, interval=0)
+    assert (ok, dev) == (False, None) and "accept manually" in why
+    assert m2.accepted == []
 
 
-def test_auto_accept_after_provision_writes_tags(wire, colony, mender):
+def test_auto_accept_requires_key_match():
+    """The identity matches, the key differs (someone claiming the name at the gateway): not accepted."""
+    from gs_api.routers import rigs
+    m = FakeMender()
+    impostor = m.add_pending("ai64-new", pubkey=new_pubkey())
+    ok, dev, why = rigs.auto_accept(m, "ai64-new", new_pubkey(), timeout=0, interval=0)
+    assert not ok and dev is None and m.accepted == []
+    assert "ANOTHER key was NOT accepted" in why
+    assert next(x for x in m.auth if x["id"] == impostor["id"])["status"] == "pending"
+    # no key reported by the provision: no auto-accept at all, even for the only matching identity
+    ok, dev, why = rigs.auto_accept(m, "ai64-new", None, timeout=0, interval=0)
+    assert not ok and m.accepted == [] and "accept manually" in why
+    # a garbage key line is no key
+    ok, _, why = rigs.auto_accept(m, "ai64-new", "-----BEGIN PUBLIC KEY-----\nnot a key\n", timeout=0, interval=0)
+    assert not ok and m.accepted == []
+
+
+def test_no_second_set_takeover(wire, colony, mender):
+    """An ACCEPTED device + a second pending set with the same identity and another key: never accepted,
+    neither when the rig reports its (accepted) key nor when the provision reported no key."""
+    from gs_api.routers import rigs
+    rig_key, thief_key = new_pubkey(), new_pubkey()
+    m = FakeMender()
+    d = m.add_pending("ai64-new", pubkey=rig_key)
+    m.accept_device(d["id"], _set(d, 0))
+    m.accepted.clear()
+    m.add_pending("ai64-new", pubkey=thief_key)          # the second set, same identity
+    ok, dev, why = rigs.auto_accept(m, "ai64-new", rig_key, timeout=0, interval=0)
+    assert ok and dev == d["id"]                          # already accepted with the rig's own key
+    assert m.accepted == []                               # the thief's set stays pending
+    assert [a["status"] for a in m.auth[0]["auth_sets"]] == ["accepted", "pending"]
+    # through the API: a re-provision of the accepted rig while the thief's set is pending
+    c = wire()
+    acc = mender.add_pending("ai64-two", pubkey=rig_key)
+    mender.accept_device(acc["id"], _set(acc, 0))
+    mender.accepted.clear()
+    mender.add_pending("ai64-two", pubkey=thief_key)
+    run_id = _add(c, name="ai64-two").json()["run_id"]
+    colony.finish(run_id, log=provision_log("ai64-two", mender_key=rig_key))
+    run = _final(c, run_id)
+    assert run["accepted"] is True and mender.accepted == []
+    # and a provision whose rig key matches NOTHING: the device is not "already accepted" for it
+    mender.accepted.clear()
+    run_id = _add(c, name="ai64-two").json()["run_id"]
+    colony.finish(run_id, log=provision_log("ai64-two", mender_key=new_pubkey()))
+    run = _final(c, run_id)
+    assert run["accepted"] is False and "accept manually" in run["note"] and mender.accepted == []
+
+
+def test_accept_with_matching_key(wire, colony, mender):
+    """The pending set carries the key the rig reported (re-wrapped PEM, CRLF, other whitespace): accepted,
+    and the tags are written."""
+    from gs_api.routers import rigs
+    key = new_pubkey()
+    m = FakeMender()
+    wrapped = "\r\n".join("  " + ln + " " for ln in key.strip().splitlines()) + "\r\n\r\n"
+    d = m.add_pending("ai64-new", pubkey=wrapped)
+    ok, dev, _ = rigs.auto_accept(m, "ai64-new", key, timeout=0, interval=0)
+    assert ok and m.accepted == [(d["id"], _set(d))]
+
     c = wire()
     r = _add(c, name="ai64-new", address="10.0.0.144")
     run_id = r.json()["run_id"]
-    pend = mender.add_pending("ai64-new")
-    stranger = mender.add_pending("someone-else")
-    colony.finish(run_id, log=provision_log("ai64-new", vpn="100.64.0.77"), vpn_ip="100.64.0.77")
-    run = wait_for(lambda: (lambda j: j if j["status"] != "running" else None)(
-        c.get(f"/api/runs/{run_id}", headers=KEY).json()))
+    pend = mender.add_pending("ai64-new", pubkey=key)
+    stranger = mender.add_pending("someone-else", pubkey=key)
+    colony.finish(run_id, log=provision_log("ai64-new", vpn="100.64.0.77", mender_key=key), vpn_ip="100.64.0.77")
+    run = _final(c, run_id)
     assert run["status"] == "success" and run["accepted"] is True
-    assert mender.accepted == [(pend["id"], pend["auth_sets"][0]["id"])]
+    assert mender.accepted == [(pend["id"], _set(pend))]
     assert next(x for x in mender.auth if x["id"] == stranger["id"])["status"] == "pending"
     tags = mender.get_tags(pend["id"])
     assert tags["name"] == "ai64-new" and tags["role"] == "master" and tags["rig_class"] == "debian"
     assert tags["local_ip"] == "10.0.0.144" and tags["remote_ip"] == "100.64.0.77"
     assert tags["base_authority"] == "colony"
+
+
+def test_mender_pubkey_from_a_newer_colony_field(wire, colony, mender):
+    """colony part C may carry the key as a record field: used without the log line."""
+    key = new_pubkey()
+    c = wire()
+    run_id = _add(c, name="ai64-f").json()["run_id"]
+    pend = mender.add_pending("ai64-f", pubkey=key)
+    colony.finish(run_id, log=provision_log("ai64-f"), mender_pubkey=key)
+    assert _final(c, run_id)["accepted"] is True and mender.accepted == [(pend["id"], _set(pend))]
 
 
 def test_opkg_rig_is_not_accepted(wire, colony, mender):
@@ -207,7 +287,7 @@ def test_opkg_rig_is_not_accepted(wire, colony, mender):
 def test_no_pending_set_in_time_is_accepted_false(wire, colony, mender):
     c = wire()
     run_id = _add(c, name="quiet-rig").json()["run_id"]
-    colony.finish(run_id, log=provision_log("quiet-rig"))
+    colony.finish(run_id, log=provision_log("quiet-rig", mender_key=new_pubkey()))
     run = wait_for(lambda: (lambda j: j if j["status"] != "running" else None)(
         c.get(f"/api/runs/{run_id}", headers=KEY).json()))
     assert run["status"] == "success" and run["accepted"] is False and "quiet-rig" in run["note"]
@@ -280,12 +360,13 @@ def test_restart_resumes_the_accept(wire, colony, mender):
     c1 = wire()
     run_id = _add(c1, name="late-rig").json()["run_id"]
     rigs.reset_state()
-    pend = mender.add_pending("late-rig")
-    colony.finish(run_id, log=provision_log("late-rig"))
+    key = new_pubkey()
+    pend = mender.add_pending("late-rig", pubkey=key)
+    colony.finish(run_id, log=provision_log("late-rig", mender_key=key))
     c2 = wire()
     j = wait_for(lambda: (lambda x: x if x["status"] != "running" else None)(
         c2.get(f"/api/runs/{run_id}", headers=KEY).json()))
-    assert j["accepted"] is True and mender.accepted == [(pend["id"], pend["auth_sets"][0]["id"])]
+    assert j["accepted"] is True and mender.accepted == [(pend["id"], _set(pend))]
 
 
 def test_deploy_runtime_uses_reachable_address(wire, colony, mender):

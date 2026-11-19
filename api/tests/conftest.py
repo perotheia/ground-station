@@ -42,6 +42,9 @@ ok: [{rig}]
 TASK [apt os_packages] *********************************************************
 {apt}
 
+TASK [COLONY_MENDER_PUBKEY {rig}] **********************************************
+{mkey}
+
 TASK [Join the fleet tailnet] **************************************************
 changed: [{rig}]
 
@@ -73,9 +76,24 @@ PLAY RECAP *********************************************************************
 """
 
 
-def provision_log(rig, vpn="100.64.0.9", cls="debian", skips="nothing"):
+def new_pubkey() -> str:
+    """A fresh public key PEM (what mender-authd's key derives to)."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    return ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+
+
+def provision_log(rig, vpn="100.64.0.9", cls="debian", skips="nothing", mender_key=None):
+    """A recorded provision play; `mender_key` (a PEM) adds the COLONY_MENDER_PUBKEY line."""
+    import base64
     apt = f"changed: [{rig}]" if cls == "debian" else f"skipping: [{rig}]"
-    return PROVISION_LOG.format(rig=rig, vpn=vpn, cls=cls, skips=skips, apt=apt)
+    if mender_key:
+        b64 = base64.b64encode(mender_key.encode()).decode()
+        mkey = f'ok: [{rig}] => {{\n    "msg": "COLONY_MENDER_PUBKEY {rig} {b64}"\n}}'
+    else:
+        mkey = f"skipping: [{rig}]"
+    return PROVISION_LOG.format(rig=rig, vpn=vpn, cls=cls, skips=skips, apt=apt, mkey=mkey)
 
 
 def _load(name):
@@ -115,10 +133,16 @@ class FakeMender:
                          "auth_sets": [{"id": f["auth_set_id"], "identity_data": idd, "status": f["auth_status"]}]})
         return cls(devices, auth)
 
-    def add_pending(self, device_id: str | None, dev_id: str | None = None, mac: str | None = None) -> dict:
+    def add_pending(self, device_id: str | None, dev_id: str | None = None, mac: str | None = None,
+                    pubkey: str | None = None) -> dict:
+        """A device checks in: a new pending auth set (on the existing device of that identity, if any)."""
         idd = {"device_id": device_id} if device_id else {"mac": mac}
-        d = {"id": dev_id or str(uuid.uuid4()), "identity_data": idd, "status": "pending",
-             "auth_sets": [{"id": str(uuid.uuid4()), "identity_data": idd, "status": "pending"}]}
+        aset = {"id": str(uuid.uuid4()), "identity_data": idd, "status": "pending", "pubkey": pubkey}
+        d = next((x for x in self.auth if device_id and x["identity_data"].get("device_id") == device_id), None)
+        if d:
+            d["auth_sets"].append(aset)
+            return d
+        d = {"id": dev_id or str(uuid.uuid4()), "identity_data": idd, "status": "pending", "auth_sets": [aset]}
         self.auth.append(d)
         return d
 
