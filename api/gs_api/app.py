@@ -22,9 +22,22 @@ def create_app() -> FastAPI:
         description="Fleet operator backend — Mender OTA control + the Theia "
                     "runtime/app vendoring planes.",
     )
+    if not s.api_key:
+        raise RuntimeError("GS_API_KEY is not set: the ground station controls fleet deployments and refuses "
+                           "to start without an API key")
+
+    @app.middleware("http")
+    async def _gate(request, call_next):      # EVERY /api route except health needs the key (reads too)
+        from fastapi.responses import JSONResponse
+        from .auth import key_ok
+        if request.url.path != "/api/health" and request.method != "OPTIONS" \
+                and not key_ok(request.headers.get("x-gs-key")):
+            return JSONResponse(status_code=401, content={"detail": "invalid or missing X-GS-Key"})
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[o.strip() for o in s.cors_origins.split(",")],
+        allow_origins=[o.strip() for o in s.cors_origins.split(",") if o.strip()],
         allow_methods=["*"], allow_headers=["*"], allow_credentials=False,
     )
 

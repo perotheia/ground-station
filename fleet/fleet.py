@@ -85,7 +85,14 @@ class Mender:
         self.dep = self.BASES[flavor]["dep"]
         # The local compose server uses a self-signed cert; --insecure skips
         # verification (dev only — the real server pins a CA).
-        self._ctx = ssl._create_unverified_context() if insecure else None
+        # MENDER_CA (a PEM file) pins the gateway certificate: the normal mode. insecure only for a throwaway dev box.
+        ca = os.environ.get("MENDER_CA", "")
+        if insecure:
+            self._ctx = ssl._create_unverified_context()
+        elif ca:
+            self._ctx = ssl.create_default_context(cafile=ca)
+        else:
+            self._ctx = None
 
     def _req(self, method: str, path: str, *, body=None, ctype=None,
              raw: bytes | None = None) -> tuple[int, bytes, dict]:

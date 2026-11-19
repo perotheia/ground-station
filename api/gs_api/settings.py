@@ -20,7 +20,7 @@ class Settings:
     mender_token: str = os.environ.get("MENDER_TOKEN", "")
     # The local GW uses a self-signed cert; dev skips verification (the real
     # server pins a CA). Default insecure=true since the bundled GW is self-signed.
-    mender_insecure: bool = os.environ.get("MENDER_INSECURE", "1") not in ("0", "false", "")
+    mender_insecure: bool = os.environ.get("MENDER_INSECURE", "0") not in ("0", "false", "")   # verify by default (MENDER_CA pins the gateway)
     mender_flavor: str = os.environ.get("MENDER_FLAVOR", "oss")
 
     # ---- MinIO distribution planes (S3) ----
@@ -42,7 +42,7 @@ class Settings:
     com_aggregator: str = os.environ.get("GS_COM_AGGREGATOR", "")   # required: <fleet host>:7700 (no site default)
 
     # ---- service ----
-    cors_origins: str = os.environ.get("GS_CORS_ORIGINS", "*")
+    cors_origins: str = os.environ.get("GS_CORS_ORIGINS", "")
     # API key gating the MUTATING routes (deploy / publish). When set, a caller
     # (colony's first-install task, a remote operator) must present X-GS-Key. When
     # empty, mutating routes are OPEN — fine for a localhost-only GS-host CLI, NOT

@@ -53,12 +53,16 @@ services:
     container_name: gs-api
     volumes:
       - ./fleet:/gs/fleet:ro      # clients.py loads fleet.py (the Mender client)
+      - "${MENDER_CA_PATH:?}:/run/mender-server-ca.crt:ro"                # pins the Mender gateway certificate
+    extra_hosts:
+      - "docker.mender.io:${MENDER_GATEWAY_IP:?set MENDER_GATEWAY_IP (the address the gateway answers on, e.g. the GS tailnet IP)}"
       - "${TS_API_TOKEN_PATH:-/dev/null}:/run/secrets/ts_api_token:ro"   # unset = VPN join disabled
     environment:
       # The Mender GW (server DNS name on the mender network) + a PAT.
-      MENDER_SERVER: "${MENDER_SERVER:-https://traefik}"
+      MENDER_SERVER: "${MENDER_SERVER:-https://docker.mender.io}"   # the gateway by its certificate name (network alias below)
+      MENDER_CA: /run/mender-server-ca.crt
       MENDER_TOKEN: "${MENDER_TOKEN:?set MENDER_TOKEN (a Mender PAT) in .env}"
-      MENDER_INSECURE: "${MENDER_INSECURE:-1}"
+      MENDER_INSECURE: "${MENDER_INSECURE:-0}"
       MENDER_FLAVOR: "${MENDER_FLAVOR:-oss}"
       # The distribution planes (the gs-s3 service above).
       S3_ENDPOINT: "${S3_ENDPOINT:-http://gs-s3:9000}"
@@ -66,14 +70,14 @@ services:
       MINIO_PASSWORD: "${S3_SECRET_KEY:?set S3_SECRET_KEY in .env (no default)}"
       # API key gating the mutating routes (deploy/publish). Unset → open (the
       # browser-only path); set it the moment a remote caller (CI, MCP) reaches in.
-      GS_API_KEY: "${GS_API_KEY:-}"
+      GS_API_KEY: "${GS_API_KEY:?set GS_API_KEY in .env (openssl rand -hex 24)}"
       # colony-api (the BASE deployment authority) — gs-api fans /api/deployments
       # out to BOTH Mender (app) and this; the base-state mirror writes Mender tags.
       COLONY_API: "${COLONY_API:-http://colony-api:8081}"
       # the fleet VPN backend (api/gs_api/vpn.py): the Tailscale API token as a 0600 FILE, mounted read-only
       TS_API_TOKEN_FILE: /run/secrets/ts_api_token
       TS_TAILNET: "${TS_TAILNET:--}"
-      COLONY_API_KEY: "${COLONY_API_KEY:-}"
+      COLONY_API_KEY: "${COLONY_API_KEY:?set COLONY_API_KEY in .env (openssl rand -hex 24)}"
       # The com aggregator answering ListMachines (cluster Observability presence +
       # the base-state mirror's rig→device map). The central board's com.
       GS_COM_AGGREGATOR: "${GS_COM_AGGREGATOR:?set GS_COM_AGGREGATOR=<fleet host>:7700 in .env}"
@@ -95,7 +99,7 @@ services:
     volumes:
       - "${COLONY_DIR:-../colony}:/colony:ro"          # playbooks + bin/colony
       - "${THEIA_WS_DIR:-../theia}:/workspace:ro"        # registry + dist/manifest
-      - "${SSH_KEY:-~/.ssh/id_rsa}:/root/.ssh/id_rsa:ro"
+      - "${SSH_KEY:?set SSH_KEY to the DEDICATED fleet ssh key (never a personal key)}:/root/.ssh/id_rsa:ro"
       - colony-journal:/var/lib/colony                   # deployment history
       - "${MENDER_CA_PATH:?set MENDER_CA_PATH=<mender-server>/compose/certs/mender.crt}:/run/mender-server-ca.crt:ro"
     environment:
@@ -108,9 +112,8 @@ services:
       MENDER_SERVER_HOST: "${MENDER_RIG_HOST:-docker.mender.io}"
       MENDER_SERVER_IP: "${MENDER_RIG_IP:-}"
       MENDER_SERVER_CA: /run/mender-server-ca.crt
-      ANSIBLE_HOST_KEY_CHECKING: "False"
       # API key gating the mutating routes (same pattern as gs-api).
-      COLONY_API_KEY: "${COLONY_API_KEY:-}"
+      COLONY_API_KEY: "${COLONY_API_KEY:?set COLONY_API_KEY in .env (openssl rand -hex 24)}"
     networks:
       - mender
 
@@ -124,7 +127,7 @@ services:
     environment:
       # injected into the /api proxy as X-GS-Key so the trusted operator browser
       # can call the mutating routes without ever carrying the key client-side.
-      GS_API_KEY: "${GS_API_KEY:-}"
+      GS_API_KEY: "${GS_API_KEY:?set GS_API_KEY in .env (openssl rand -hex 24)}"
     depends_on:
       - gs-api
     networks:

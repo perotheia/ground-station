@@ -22,9 +22,8 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 
 
 def _require_key(x_gs_key: str | None = Header(default=None)) -> None:
-    want = settings().api_key
-    if want and x_gs_key != want:
-        raise HTTPException(status_code=401, detail="invalid or missing X-GS-Key")
+    from ..auth import require_key
+    require_key(x_gs_key)
 
 
 # The com AGGREGATOR endpoint that answers ListMachines (the central board's com).

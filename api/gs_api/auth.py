@@ -12,15 +12,19 @@ GS-host CLI is the only caller). Set it the moment the API is network-reachable.
 """
 from __future__ import annotations
 
+import hmac
+
 from fastapi import Header, HTTPException
 
 from .settings import settings
 
 
+def key_ok(got: str | None) -> bool:
+    want = settings().api_key
+    return bool(want) and bool(got) and hmac.compare_digest(got.encode(), want.encode())
+
+
 def require_key(x_gs_key: str | None = Header(default=None)) -> None:
-    """FastAPI dependency — enforce X-GS-Key on a mutating route iff a key is set."""
-    s = settings()
-    if not s.api_key:
-        return  # gate disabled (localhost-only deployment)
-    if x_gs_key != s.api_key:
+    """FastAPI dependency: X-GS-Key, always (there is no open mode: the app refuses to start without a key)."""
+    if not key_ok(x_gs_key):
         raise HTTPException(status_code=401, detail="invalid or missing X-GS-Key")
