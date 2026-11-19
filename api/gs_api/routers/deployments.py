@@ -313,6 +313,8 @@ def deploy_base(req: BaseDeployRequest) -> dict:
         extra["role"] = req.role or "master"
         if req.runtime_version:
             extra["runtime_version"] = req.runtime_version
+        if req.kind == "provision":
+            extra["mender_device_id"] = req.rig      # the rig's Mender identity (device_id); Connect accepts by it
         if req.user:
             if not req.user.replace("-", "").replace("_", "").isalnum():
                 raise HTTPException(status_code=422, detail="user: letters, digits, - and _ only")

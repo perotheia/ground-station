@@ -87,12 +87,17 @@ services:
       - "${THEIA_WS_DIR:-../theia}:/workspace:ro"        # registry + dist/manifest
       - "${SSH_KEY:-~/.ssh/id_rsa}:/root/.ssh/id_rsa:ro"
       - colony-journal:/var/lib/colony                   # deployment history
+      - "${MENDER_CA_PATH:?set MENDER_CA_PATH=<mender-server>/compose/certs/mender.crt}:/run/mender-server-ca.crt:ro"
     environment:
       THEIA_WORKSPACE: /workspace
       COLONY_ANSIBLE: /colony/ansible
       COLONY_JOURNAL: /var/lib/colony/journal.jsonl
       # the S3 plane as BOTH the controller (this container) and the rigs reach it: the fleet host's address
       THEIA_S3_ENDPOINT: "${THEIA_S3_ENDPOINT:?set THEIA_S3_ENDPOINT=http://<fleet host>:9000 in .env}"
+      # the Mender server as the RIGS reach it (colony tasks/mender-enroll.yml); empty host = no Mender enrollment
+      MENDER_SERVER_HOST: "${MENDER_RIG_HOST:-docker.mender.io}"
+      MENDER_SERVER_IP: "${MENDER_RIG_IP:-}"
+      MENDER_SERVER_CA: /run/mender-server-ca.crt
       ANSIBLE_HOST_KEY_CHECKING: "False"
       # API key gating the mutating routes (same pattern as gs-api).
       COLONY_API_KEY: "${COLONY_API_KEY:-}"
