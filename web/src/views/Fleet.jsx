@@ -15,14 +15,15 @@ const DOT = {
   'mender+com': ['#4CAF50', 'synchronized (Mender + Observability)'],
   'mender-only': ['#E57373', 'registered, no observability'],
   'com-only': ['#FFB300', 'observed, not enrolled'],
+  unknown: ['#90A4AE', 'observability unknown (ListMachines failed)'],
 }
 
 // Timeline event authority -> colour. base=colony (runtime base), app=Mender
 // (the SWP/app), state=ECU plane (UCM/SM). Drives the Timeline drawer dots.
 const AUTH_COLOR = { base: "#4CAF50", app: "#42A5F5", state: "#FFB300" }
-function Dot({ s }) {
+function Dot({ s, why }) {
   const [c, t] = DOT[s] || ['#90A4AE', s || 'unknown']
-  return <span title={t} className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: c }} />
+  return <span title={why ? `${t}: ${why}` : t} className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: c }} />
 }
 
 // A small state pill (Health / SM / UCM). Greys out when the rig hasn't reported.
@@ -111,7 +112,7 @@ function Timeline({ device, onClose }) {
       <div className="card w-[34rem] h-full p-4 overflow-auto rounded-none" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center mb-1">
           <h3 className="font-semibold">{device.name || device.id?.slice(0, 12)}</h3>
-          <Dot s={device.connected} />
+          <Dot s={device.connected} why={device.observability_error} />
           <button className="btn-ghost ml-auto" onClick={onClose}>Close</button>
         </div>
         <div className="text-xs text-muted mb-3 flex gap-3 flex-wrap">
@@ -182,8 +183,10 @@ function DeviceRow({ d, groups, onSelect, reload, checked, onCheck }) {
       <td className="cell text-xs" onClick={() => onSelect(d)}><Pill v={d.health} /></td>
       <td className="cell text-xs" onClick={() => onSelect(d)}><Pill v={d.sm_state} /></td>
       <td className="cell text-xs" onClick={() => onSelect(d)}><Pill v={d.ucm_version} /></td>
-      <td className="cell flex items-center gap-2 text-xs" onClick={() => onSelect(d)}>
-        <Dot s={d.connected} /><span className="text-muted">{d.connected}</span>
+      <td className="cell flex items-center gap-2 text-xs" onClick={() => onSelect(d)}
+          title={d.observability_error || undefined}>
+        <Dot s={d.connected} why={d.observability_error} />
+        <span className="text-muted">{d.connected === 'unknown' ? 'observability: unknown' : d.connected}</span>
       </td>
     </tr>
   )
@@ -325,7 +328,8 @@ export function Fleet() {
   // merge the lazy observability fields onto the fast list (by id).
   const devices = baseDevices.map((d) => {
     const o = obsById[d.id]
-    return o ? { ...d, connected: o.connected, base_source: o.base_source } : d
+    return o ? { ...d, connected: o.connected, base_source: o.base_source,
+                 observability_error: o.observability_error } : d
   })
   const groups = gdata?.groups || []
   const reload = () => { refresh(); grefresh() }
@@ -383,6 +387,11 @@ export function Fleet() {
       {error && (
         <div className="bg-red-500/15 border-b border-red-500/40 text-red-300 text-xs px-3 py-2">
           ⚠ Can't reach Mender — the fleet can't be read (devices are NOT deleted; connectivity/auth error). {error}
+        </div>
+      )}
+      {odata?.observability_error && (
+        <div className="bg-amber-500/10 border-b border-amber-500/40 text-amber-300 text-xs px-3 py-2">
+          ⚠ Observability unknown — ListMachines failed: {odata.observability_error}
         </div>
       )}
       <div className="flex-1 overflow-auto">

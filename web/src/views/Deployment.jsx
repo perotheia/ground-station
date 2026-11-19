@@ -8,16 +8,17 @@ import { CreateTargetModal } from '../components/CreateTargetModal'
 // Deploy → routed by release TYPE (base→colony, app→Mender) with the
 // runtime-compat gate (an app only lands where base_version == requires_runtime).
 
-function StatusDot({ s }) {
+function StatusDot({ s, why }) {
   // UF status colors: synced/pending/error/registered + our base/app coupling
   const map = {
     'mender+com': ['#4CAF50', 'synchronized'],
     'mender-only': ['#E57373', 'no observability'],
     pending: ['#FFC107', 'pending'],
     registered: ['#1E88E5', 'registered'],
+    unknown: ['#90A4AE', 'observability unknown (ListMachines failed)'],
   }
   const [c, t] = map[s] || ['#90A4AE', s || 'unknown']
-  return <span title={t} className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: c }} />
+  return <span title={why ? `${t}: ${why}` : t} className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: c }} />
 }
 
 // Inline confirm bubble for a row-level destructive action (no modal).
@@ -70,7 +71,15 @@ function CleanupDialog({ device, onClose, onRun }) {
 
 function Targets({ sel, setSel, onAssigned }) {
   const { data, loading, error, refresh } = usePoll(() => api.devices(), [], 6000)
-  const devices = data?.devices || []
+  // the same LAZY observability pass as the Fleet view (com ListMachines — slow),
+  // merged by id, so a target shows the same observability as in Fleet.
+  const { data: odata } = usePoll(() => api.devices(null, null, true), [], 15000)
+  const obsById = Object.fromEntries((odata?.devices || []).map((d) => [d.id, d]))
+  const devices = (data?.devices || []).map((d) => {
+    const o = obsById[d.id]
+    return o ? { ...d, connected: o.connected, base_source: o.base_source,
+                 observability_error: o.observability_error } : d
+  })
   const selDev = devices.find((d) => d.id === sel)
   const [confirm, setConfirm] = useState(null)   // device id awaiting del confirm
   const [cleanDlg, setCleanDlg] = useState(null)  // device awaiting cleanup-scope dialog
@@ -125,7 +134,7 @@ function Targets({ sel, setSel, onAssigned }) {
                 <td className="cell font-mono text-xs">{d.name || d.id.slice(0, 10)}</td>
                 <td className="cell text-xs text-muted">{d.base_version || '—'}</td>
                 <td className="cell text-xs text-muted">{d.artifact || '—'}</td>
-                <td className="cell"><StatusDot s={d.connected} /></td>
+                <td className="cell"><StatusDot s={d.connected} why={d.observability_error} /></td>
                 <td className="cell text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                   {confirm === `del:${d.id}`
                     ? <RowConfirm label="delete" onYes={() => del(d)} onNo={() => setConfirm(null)} />
@@ -185,7 +194,9 @@ function TargetDetails({ dev }) {
           ? `${dev.base_version}${dev.base_source === 'live' ? ' (live)' : ''}`
           : '— (no runtime reported)'} />
         <Kv k="App" v={dev.artifact || '—'} />
-        <Kv k="Connected" v={dev.connected} />
+        <Kv k="Connected" v={dev.connected === 'unknown'
+          ? `observability: unknown${dev.observability_error ? ` (${dev.observability_error})` : ''}`
+          : (dev.connected || '… (observability pending)')} />
       </div>
     </div>
   )

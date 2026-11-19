@@ -236,11 +236,18 @@ def artifacts() -> dict:
 
 
 # ── BASE deployment (colony) + the base-state mirror into Mender ─────────────
-def _mender_device_for_rig(s, m, rig: str) -> dict | None:
-    """Map a colony rig → its Mender device for the base-state mirror. The robust
-    key is the rig's `ansible_host` IP (registry) matched against the device's
-    reported ipv4_* (the rpi4 reports hostname=raspberrypi, NOT the rig name
-    'central', so a name match alone fails). Hostname/name match is the fallback."""
+def _mender_device_for_rig(s, m, rig: str, device_id: str | None = None) -> dict | None:
+    """Map a colony rig → its Mender device for the base-state mirror. An explicit
+    Mender device id (the caller knows it) wins. Else the robust key is the rig's
+    `ansible_host` IP (registry) matched against the device's reported ipv4_* (the
+    rpi4 reports hostname=raspberrypi, NOT the rig name 'central', so a name match
+    alone fails). Then an EXACT match of the rig on the device's name / identity
+    device_id / hostname / machine tag, and last the old fuzzy name match."""
+    devs = m.devices()
+    if device_id:
+        dev = next((d for d in devs if d.get("id") == device_id), None)
+        if dev:
+            return dev
     rig_ip = None
     try:
         rinfo = next((r for r in colony_client(s).rigs() if r.get("name") == rig), {})
@@ -248,15 +255,30 @@ def _mender_device_for_rig(s, m, rig: str) -> dict | None:
     except Exception:  # noqa: BLE001
         pass
     rigl = rig.lower()
-    for d in m.devices():
-        attrs = {a["name"]: (a["value"][0] if isinstance(a["value"], list) and a["value"]
-                             else a["value"]) for a in d.get("attributes", []) or []}
-        # by IP (authoritative): any ipv4_* attr whose address equals the rig host
-        if rig_ip:
-            for k, v in attrs.items():
+
+    def _attrs(d):
+        return {a["name"]: (a["value"][0] if isinstance(a["value"], list) and a["value"]
+                            else a["value"]) for a in d.get("attributes", []) or []}
+    # by IP (authoritative): any ipv4_* attr whose address equals the rig host
+    if rig_ip:
+        for d in devs:
+            for k, v in _attrs(d).items():
                 if k.startswith("ipv4") and str(v).split("/")[0] == rig_ip:
                     return d
-        # by name/hostname (fallback)
+    # by exact name: the operator name tag, the identity device_id (a provision
+    # passes the identity as the rig), the hostname, the machine tag. The hostname
+    # alone is not enough: the AI-64 reports hostname=BeagleBone, name=ai64-proto.
+    for d in devs:
+        attrs = _attrs(d)
+        idd = d.get("identity_data") or {}
+        cands = [attrs.get("name"), attrs.get("device_id"),
+                 idd.get("device_id") if isinstance(idd, dict) else None,
+                 attrs.get("hostname"), attrs.get("machine")]
+        if rigl in {str(c).lower() for c in cands if c}:
+            return d
+    # by name/hostname (fuzzy fallback)
+    for d in devs:
+        attrs = _attrs(d)
         cand = str(attrs.get("machine") or attrs.get("hostname")
                    or attrs.get("name") or "").lower()
         if cand and (cand == rigl or rigl in cand or cand in rigl):
@@ -419,40 +441,52 @@ def deploy_base(req: BaseDeployRequest) -> dict:
         except Exception:  # noqa: BLE001
             pass            # tag-clear is best-effort; cleanup already ran
     elif req.mirror and ok:
-        mirrored = _mirror_base_state(s, req.rig, dep)
+        mirrored = _mirror_base_state(s, req.rig, dep, req.device_id)
     return {"deployment": dep, "ok": ok, "mirrored": mirrored, "vpn": vpn_note}
 
 
-def _mirror_base_state(s, rig: str, dep: dict) -> bool:
-    """Write the base-state tags onto the rig's Mender device. The version is the
-    rig's runtime_version (the release colony staged); authority is always colony."""
+def _mirror_base_state(s, rig: str, dep: dict, device_id: str | None = None) -> bool:
+    """Write the base-state tags onto the rig's Mender device after a successful
+    provision / orchestrate: base_version = the runtime_version colony installed,
+    base_status, base_deployed_at, and the cluster identity (machine = the machine
+    name the rig reports in ListMachines, machine_instance). Authority is colony.
+
+    colony keeps runtime_version / role / machine_instance in the deployment's
+    `extra` (registry-free colony has no rig record); read the deployment first,
+    the top level and the old rig registry as fallbacks."""
     import time
     m = mender_client(s)
-    dev = _mender_device_for_rig(s, m, rig)
+    dev = _mender_device_for_rig(s, m, rig, device_id)
     if not dev:
         return False
-    # the runtime_version the rig pulled — from colony-api's rig registry
-    ver = "unknown"
-    machine = rig
-    machine_instance = "0"
+    extra = dep.get("extra") or {}
+    ver = dep.get("runtime_version") or extra.get("runtime_version")
+    # the machine name the rig reports is its manifest machine = the role slice
+    # colony installed (master | zonal), not the GS device name (ai64-proto).
+    machine = dep.get("machine") or extra.get("machine") or extra.get("role")
+    machine_instance = extra.get("machine_instance")
     try:
         rinfo = next((r for r in colony_client(s).rigs() if r.get("name") == rig), {})
-        ver = rinfo.get("runtime_version") or "unknown"
-        machine = rinfo.get("machine") or rig
-        machine_instance = str(rinfo.get("machine_instance", "0"))
+        ver = ver or rinfo.get("runtime_version")
+        machine = machine or rinfo.get("machine")
+        if machine_instance is None:
+            machine_instance = rinfo.get("machine_instance")
     except Exception:  # noqa: BLE001
         pass
+    finished = dep.get("finished")
     try:
         m.set_tags(dev["id"], {
-            "base_version": ver,
+            "base_version": ver or "unknown",
             "base_authority": "colony",
             "base_kind": dep.get("kind", "orchestrate"),
-            "base_deployed_at": str(int(time.time())),
+            "base_deployed_at": str(int(finished if isinstance(finished, (int, float))
+                                        else time.time())),
             "base_status": "success",
             # the cluster identity — lets the Fleet tri-state match a Mender device
-            # to a ListMachines entry by INSTANCE (robust to the m<N> name fallback).
-            "machine": machine,
-            "machine_instance": machine_instance,
+            # to a ListMachines entry by INSTANCE (robust to the m<N> name fallback)
+            # or by the reported machine name.
+            "machine": machine or rig,
+            "machine_instance": str(machine_instance if machine_instance is not None else "0"),
         })
         return True
     except Exception:  # noqa: BLE001
@@ -990,6 +1024,9 @@ def deploy_distribution(req: DistDeployRequest) -> dict:
                 if _d.get("status") == "finished":
                     _st = (_d.get("statistics") or {}).get("status", {})
                     step["base_ok"] = bool(_st.get("success", 0)) and not _st.get("failure", 0)
+                    if step["base_ok"]:
+                        # the same base-state mirror as /base (machine, base_version, ...)
+                        step["mirrored"] = _mirror_base_state(s, rig, _d, a.device_id)
                     break
                 _t.sleep(3)
         except Exception as e:  # noqa: BLE001

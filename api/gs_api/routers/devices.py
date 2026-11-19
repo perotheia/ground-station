@@ -139,9 +139,10 @@ def list_devices(group: str | None = Query(default=None),
         d["auth_set_id"] = asets[0]["id"] if asets else None
         devices.append(d)
     # ── connected state: cross-reference Mender (accepted) with the Observability
-    #    cluster (ListMachines). Two states, no can't-tell — the whole fleet runs
-    #    ListMachines: mender+com (present in the cluster) or mender-only (accepted
-    #    but the supervisor isn't published — a real health gap). (com-only boards
+    #    cluster (ListMachines). Two states when ListMachines answers: mender+com
+    #    (present in the cluster) or mender-only (accepted but the supervisor isn't
+    #    published — a real health gap); `unknown` + the error when ListMachines
+    #    itself fails (the cluster could not be read). (com-only boards
     #    aren't in Mender inventory → they surface via /pending.) ────────────────
     # Observability cross-ref is BEST-EFFORT now (the list is devauth-sourced; a
     # cluster fault or a non-accepted device must not sink the fleet list).
@@ -158,9 +159,16 @@ def list_devices(group: str | None = Query(default=None),
                 d["connected"] = None
             d["base_source"] = None
         return {"devices": devices, "observed": False}
+    # A FAILED ListMachines is not "the board is not there": the accepted rows say
+    # observability `unknown` and carry the error (mender-only would be a lie).
+    obs_error = None
     try:
         observed = _observed()
-    except Exception:  # noqa: BLE001
+    except HTTPException as e:
+        obs_error = str(e.detail)
+    except Exception as e:  # noqa: BLE001
+        obs_error = str(e)
+    if obs_error:
         observed = {"by_inst": {}, "by_name": {}, "rel_by_inst": {}, "rel_by_name": {}}
     by_inst = observed["by_inst"]
     by_name = observed["by_name"]
@@ -172,6 +180,11 @@ def list_devices(group: str | None = Query(default=None),
         if d.get("auth_status") and d["auth_status"] != "accepted":
             d["connected"] = d["auth_status"]
             d["base_source"] = None
+            continue
+        if obs_error:
+            d["connected"] = "unknown"
+            d["observability_error"] = obs_error
+            d["base_source"] = "mirror" if d.get("base_version") else None
             continue
         attrs = d.get("attributes", {}) or {}
         # 1. by INSTANCE (authoritative): the device's machine_instance tag
@@ -197,8 +210,11 @@ def list_devices(group: str | None = Query(default=None),
     for d in devices:
         if d["fleet"]:
             fleets[d["fleet"]] = fleets.get(d["fleet"], 0) + 1
-    return {"devices": devices, "count": len(devices), "fleets": fleets,
-            "cluster": by_name}
+    out = {"devices": devices, "count": len(devices), "fleets": fleets,
+           "cluster": by_name}
+    if obs_error:
+        out["observability_error"] = obs_error
+    return out
 
 
 # ── Connect Device — the GS funnel (dual registration) ───────────────────────
