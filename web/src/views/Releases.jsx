@@ -28,6 +28,8 @@ function Lock({ on }) {
 export function Releases() {
   const { data: rtData, refresh: rtRefresh } = usePoll(() => api.runtimePlane(), [], 8000)
   const { data: appData, refresh } = usePoll(() => api.appsPlane(), [], 8000)
+  // the Mender artifacts (what a rollout deploys) — the operator never opens the Mender UI
+  const { data: artData, error: artErr } = usePoll(() => api.menderArtifacts(), [], 15000)
   const [confirm, setConfirm] = useState(null)
   const [rtConfirm, setRtConfirm] = useState(null)
   const [busy, setBusy] = useState(null)
@@ -87,7 +89,7 @@ export function Releases() {
   const selApp = sel?.kind === 'app' ? apps.find((a) => appId(a) === sel.id) : null
 
   return (
-    <div className="h-full grid grid-rows-[1fr_auto] gap-3">
+    <div className="h-full grid grid-rows-[1fr_auto_auto] gap-3">
     <div className="grid grid-cols-2 gap-3 min-h-0">
       {/* Runtime plane (base) + its dependents — cards are selectable */}
       <div className="pane">
@@ -179,6 +181,8 @@ export function Releases() {
       </div>
     </div>
 
+    <MenderArtifacts rows={artData?.artifacts} error={artErr} />
+
     {/* Inspector — details for the selected base OR app card (replaces the old
         role plane). Read-only; select a card in either pane above. */}
     <div className="pane max-h-52">
@@ -216,6 +220,67 @@ export function Releases() {
       </div>
     </div>
     {note && <div className="text-xs text-red-400 px-1">{note}</div>}
+    </div>
+  )
+}
+
+export const fmtSize = (n) => (n == null ? '—' : n < 1024 ? `${n} B`
+  : n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(1)} MiB`)
+export const fmtWhen = (t) => { const d = t ? new Date(t) : null
+  return d && !isNaN(d) ? d.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—' }
+
+// What the artifact needs of the device's base runtime (the GS rollout gate, G3).
+export function requirementText(a) {
+  const r = a?.requirement
+  if (!r) return null
+  return r.runtime ? `runtime ${r.runtime}` : `${r.abi} runtime`
+}
+
+export function SignedBadge({ signed }) {
+  return signed
+    ? <span className="badge bg-emerald-500/15 text-emerald-300" data-testid="signed">signed</span>
+    : <span className="badge bg-red-500/15 text-red-300" data-testid="unsigned"
+            title="no signature: a rig with ArtifactVerifyKey set refuses it">unsigned</span>
+}
+
+// Mender artifacts — every artifact on the Mender server (the deployable unit of a rollout).
+function MenderArtifacts({ rows, error }) {
+  const list = rows || []
+  return (
+    <div className="pane max-h-64" data-testid="mender-artifacts">
+      <div className="pane-head">
+        <span className="badge bg-slate-500/20 text-slate-300 mr-2">mender</span>Mender artifacts
+        <span className="text-muted font-normal text-xs ml-2">{list.length}</span>
+        <span className="ml-auto text-[11px] text-muted font-normal">roll one out from Rollouts → New Rollout</span>
+      </div>
+      <div className="flex-1 overflow-auto">
+        <table className="w-full">
+          <thead className="sticky top-0 bg-sidebar/60">
+            <tr><th className="th">Artifact</th><th className="th">Version</th><th className="th">Kind</th>
+              <th className="th">Device types</th><th className="th">Signed</th><th className="th">Needs</th>
+              <th className="th text-right">Size</th><th className="th">Created</th></tr>
+          </thead>
+          <tbody className="divide-y divide-edge/40">
+            {error && <tr><td className="cell text-red-400 text-xs" colSpan={8}>{error}</td></tr>}
+            {!error && rows && list.length === 0 && <tr><td className="cell text-muted" colSpan={8}>no artifacts on the Mender server</td></tr>}
+            {!rows && !error && <tr><td className="cell text-muted" colSpan={8}>loading…</td></tr>}
+            {list.map((a) => (
+              <tr key={a.id || a.name} data-testid={`artifact-${a.name}`}>
+                <td className="cell font-mono text-xs text-slate-100">{a.name}</td>
+                <td className="cell font-mono text-xs">{a.version || '—'}</td>
+                <td className="cell text-xs">{a.kind
+                  ? <span className="badge bg-cyan-500/15 text-cyan-300">{a.kind}</span>
+                  : <span className="text-muted">{(a.types || []).join(', ') || '—'}</span>}</td>
+                <td className="cell text-xs text-muted">{(a.device_types || []).join(', ')}</td>
+                <td className="cell text-xs"><SignedBadge signed={a.signed} /></td>
+                <td className="cell text-xs font-mono text-violet-300">{requirementText(a) || <span className="text-muted">—</span>}</td>
+                <td className="cell text-xs text-right">{fmtSize(a.size)}</td>
+                <td className="cell text-xs text-muted">{fmtWhen(a.created)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

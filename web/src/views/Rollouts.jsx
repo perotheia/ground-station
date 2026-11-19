@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react'
 import { api } from '../api'
 import { usePoll, useDeploymentDevices } from '../App'
 import { Rollout } from './Rollout'
+import { SignedBadge, requirementText } from './Releases'
 
 // Rollouts — phased-by-group APP upgrades/downgrades (UF "Rollout View", trimmed
 // for a lab fleet: NO percent thresholds / auto-halt). A rollout is a NAMED,
@@ -202,6 +203,114 @@ function NewRolloutDialog({ onClose, onCreated }) {
   )
 }
 
+// The device's base runtime vs what the artifact needs (mirrors the GS gate, G3): a hint only —
+// the GS refuses the mismatch itself (422) and the dialog shows its answer.
+function runtimeMismatch(art, baseVersion) {
+  const r = art?.requirement
+  if (!r) return null
+  const need = r.runtime || `${r.abi} runtime`
+  if (!baseVersion) return `no base runtime recorded; needs ${need}`
+  const i = baseVersion.indexOf('-')
+  const ver = i < 0 ? baseVersion : baseVersion.slice(0, i)
+  const abi = i < 0 ? '' : baseVersion.slice(i + 1)
+  const mm = (v) => (v || '').split('.').slice(0, 2).join('.')
+  if (r.abi && abi !== r.abi) return `needs ${need}`
+  if (r.version && mm(ver) !== mm(r.version)) return `needs ${need}`
+  return null
+}
+
+// New Rollout — ONE Mender artifact to one or more devices (one device = a HIL iteration). The
+// operator never opens the Mender UI: the artifact list, the device pick and the outcome live here.
+function AppRolloutDialog({ onClose, onCreated }) {
+  const { data: artData, error: artErr } = usePoll(() => api.menderArtifacts(), [], 60000)
+  const { data: fleet } = usePoll(() => api.fleet(), [], 60000)
+  const arts = artData?.artifacts || []
+  // Mender devices only (an opkg/colony-only rig has no Mender client), accepted ones
+  const devices = (fleet || []).filter((d) => d.mender_id && d.auth_status === 'accepted')
+  const [artifact, setArtifact] = useState('')
+  const [picked, setPicked] = useState([])
+  const [ack, setAck] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const art = arts.find((a) => a.name === artifact)
+  const unsigned = art && !art.signed
+
+  const toggle = (id) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))
+  const create = async () => {
+    if (!artifact) { setErr('pick an artifact'); return }
+    if (picked.length === 0) { setErr('pick at least one target device'); return }
+    if (unsigned && !ack) { setErr('this artifact is unsigned: confirm first'); return }
+    setBusy(true); setErr(null)
+    try { onCreated(await api.createAppRollout(artifact, picked)) } catch (e) { setErr(e.message) }
+    setBusy(false)
+  }
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="card w-[36rem] p-4" onClick={(e) => e.stopPropagation()} data-testid="app-rollout">
+        <div className="flex items-center mb-3">
+          <h3 className="font-semibold">New Rollout</h3>
+          <button className="btn-ghost ml-auto" onClick={onClose}>Close</button>
+        </div>
+
+        <label className="block text-xs text-muted mb-1">Artifact (Mender)</label>
+        <select className="input w-full mb-2" name="artifact" value={artifact}
+                onChange={(e) => { setArtifact(e.target.value); setAck(false); setErr(null) }}>
+          <option value="">{artErr ? `artifacts: ${artErr}` : '— pick —'}</option>
+          {arts.map((a) => (
+            <option key={a.id || a.name} value={a.name}>
+              {a.name}{a.kind ? ` · ${a.kind}` : ''}{a.signed ? '' : ' · UNSIGNED'}
+            </option>
+          ))}
+        </select>
+        {art && (
+          <div className="text-[11px] text-muted mb-3 flex flex-wrap items-center gap-2" data-testid="ro-artifact-info">
+            <SignedBadge signed={art.signed} />
+            <span>for {(art.device_types || []).join(', ')}</span>
+            {requirementText(art) && <span>needs <span className="font-mono text-violet-300">{requirementText(art)}</span></span>}
+          </div>
+        )}
+        {unsigned && (
+          <div className="rounded border border-red-500/40 bg-red-500/10 text-red-200 text-xs p-2 mb-3"
+               data-testid="unsigned-warning">
+            <b>{art.name} is NOT signed.</b> A rig with an artifact verify key (every rig the GS
+            provisions) refuses it at download: the rollout will end in failure.
+            <label className="flex items-center gap-2 mt-1.5">
+              <input type="checkbox" name="ack-unsigned" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+              roll it out anyway
+            </label>
+          </div>
+        )}
+
+        <label className="block text-xs text-muted mb-1">Target devices (Mender, accepted)</label>
+        <div className="rounded border border-edge max-h-48 overflow-auto mb-3 divide-y divide-edge/40">
+          {fleet && devices.length === 0 && <div className="p-2 text-xs text-muted">no accepted Mender device</div>}
+          {devices.map((d) => {
+            const mm = art ? runtimeMismatch(art, d.base_version) : null
+            return (
+              <label key={d.mender_id} className="flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer"
+                     data-testid={`ro-dev-${d.name}`}>
+                <input type="checkbox" checked={picked.includes(d.mender_id)} onChange={() => toggle(d.mender_id)} />
+                <span className="font-medium">{d.name}</span>
+                <span className="text-xs text-muted font-mono">base {d.base_version || '—'}</span>
+                {mm && <span className="ml-auto badge bg-amber-500/15 text-amber-300"
+                             data-testid={`ro-mismatch-${d.name}`}>{mm}</span>}
+              </label>
+            )
+          })}
+        </div>
+        <p className="text-[11px] text-muted mb-3">
+          One device is a HIL iteration. The GS refuses a device whose base runtime the artifact
+          does not run on; the device commits only when the app's processes stay up, else it rolls back.
+        </p>
+        {err && <div className="text-xs text-red-400 mb-2" data-testid="ro-error">{err}</div>}
+        <button className="btn w-full" disabled={busy || (unsigned && !ack)} onClick={create} data-testid="ro-create">
+          {busy ? 'creating…' : unsigned ? 'Create Rollout (unsigned)' : 'Create Rollout'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // Phase-plan tracker — the active NAMED rollout's sub-groups + Advance/Abort.
 // State lives on the server (S3) keyed by name; Advance re-reads it there.
 function PhasePlan({ rollout, onClose }) {
@@ -296,6 +405,7 @@ export function Rollouts() {
   const { data: rdata, refresh: refreshRollouts } = usePoll(() => api.listRollouts(), [], 8000)
   const [sel, setSel] = useState(null)
   const [showNew, setShowNew] = useState(false)
+  const [showPhased, setShowPhased] = useState(false)
   const [active, setActive] = useState(null)   // the in-progress phase plan
   const [busyAbort, setBusyAbort] = useState(null)
   const deps = (data?.deployments || []).filter((d) => d.authority !== 'base')  // app rollouts
@@ -313,7 +423,9 @@ export function Rollouts() {
         Rollouts
         <span className="text-muted font-normal text-xs ml-2">{deps.length}</span>
         <span className="ml-auto flex gap-1">
-          <button className="btn" onClick={() => setShowNew(true)}>New Rollout</button>
+          <button className="btn-ghost text-xs" onClick={() => setShowPhased(true)}
+                  title="a named, phased upgrade of a group to a published app SWP">Phased rollout</button>
+          <button className="btn" data-testid="new-rollout-btn" onClick={() => setShowNew(true)}>New Rollout</button>
         </span>
       </div>
       <div className="flex-1 overflow-auto p-3">
@@ -350,7 +462,7 @@ export function Rollouts() {
             {deps.map((d) => {
               const done = ['finished', 'aborted'].includes(d.status)
               return (
-                <tr key={d.id}
+                <tr key={d.id} data-testid={`dep-${d.id}`}
                     onClick={() => setSel(sel === d.id ? null : d.id)}
                     className={`cursor-pointer hover:bg-edge/20 ${sel === d.id ? 'row-sel' : ''}`}>
                   <td className="cell text-sm">{d.name}</td>
@@ -371,9 +483,11 @@ export function Rollouts() {
           </tbody>
         </table>
       </div>
-      {sel && <Rollout depId={sel} onClose={() => setSel(null)} />}
-      {showNew && <NewRolloutDialog onClose={() => setShowNew(false)}
-        onCreated={(r) => { setShowNew(false); setActive(r); refresh(); refreshRollouts() }} />}
+      {sel && <Rollout key={sel} depId={sel} onClose={() => setSel(null)} />}
+      {showPhased && <NewRolloutDialog onClose={() => setShowPhased(false)}
+        onCreated={(r) => { setShowPhased(false); setActive(r); refresh(); refreshRollouts() }} />}
+      {showNew && <AppRolloutDialog onClose={() => setShowNew(false)}
+        onCreated={(r) => { setShowNew(false); setSel(r.id); refresh() }} />}
     </div>
   )
 }
