@@ -26,6 +26,7 @@ MENDER_SERVER_REF="${MENDER_SERVER_REF:-v4.1.5}"
 # The IMAGES are a separate pin: upstream's .env at a release tag is a MOVING tag (v4.0.1: `v4.0`; v4.1.5: `main`),
 # so a tagged checkout alone runs whatever was pushed last. Pin the images to the same release.
 export MENDER_IMAGE_TAG="${MENDER_IMAGE_TAG:-$MENDER_SERVER_REF}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-fleet-mender}"   # one named project: removable cleanly
 WORK="${MENDER_SERVER_DIR:-$HOME/mender-server}"
 REPO="https://github.com/mendersoftware/mender-server.git"
 
@@ -41,11 +42,9 @@ _clone() {
 case "$ACTION" in
   up)
     _clone
-    # Install the theia override (traefik fix for Docker>=25 hosts) + the static
-    # routes (routing independent of the broken Docker-label discovery).
-    HERE="$(cd "$(dirname "$0")" && pwd)"
-    cp "$HERE/docker-compose.override.yml" "$WORK/docker-compose.override.yml"
-    cp "$HERE/theia-routes.yaml" "$WORK/compose/config/traefik/theia-routes.yaml"
+    # No override: upstream v4.1.5 ships traefik v3.7.x and its own S3 (SeaweedFS) and routes correctly on
+    # Docker 29 (verified on panzer 2026-11-19). The old theia override + static routes are retired.
+    rm -f "$WORK/docker-compose.override.yml" "$WORK/compose/config/traefik/theia-routes.yaml"
     cd "$WORK"
     echo "[server] docker compose up -d (this pulls ~2-3GB on first run)"
     docker compose up -d
