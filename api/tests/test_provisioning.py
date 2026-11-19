@@ -295,12 +295,47 @@ def test_no_second_set_takeover(wire, colony, mender):
     colony.finish(run_id, log=provision_log("ai64-two", mender_key=rig_key))
     run = _final(c, run_id)
     assert run["accepted"] is True and mender.accepted == []
-    # and a provision whose rig key matches NOTHING: the device is not "already accepted" for it
+    # and a provision whose rig key matches NOTHING: the device is not "already accepted" for it (the name is
+    # enrolled with another key: test_no_auto_accept_when_name_enrolled_with_another_key)
     mender.accepted.clear()
     run_id = _add(c, name="ai64-two").json()["run_id"]
     colony.finish(run_id, log=provision_log("ai64-two", mender_key=new_pubkey()))
     run = _final(c, run_id)
-    assert run["accepted"] is False and "accept manually" in run["note"] and mender.accepted == []
+    assert run["accepted"] is False and "already enrolled with another key" in run["note"]
+    assert mender.accepted == []
+
+
+def test_no_auto_accept_when_name_enrolled_with_another_key(wire, colony, mender):
+    """Review 2026-11-19 (HIGH, key takeover): Add device <existing name> pointed at ANOTHER board the fleet key
+    reaches: colony rewrites that board's identity to the name and reports ITS key, its pending set carries that
+    key. The name is already enrolled (an accepted set) with a different key: nothing is accepted, the tags stay."""
+    from gs_api.routers import rigs
+    old_key, other_board = new_pubkey(), new_pubkey()
+    m = FakeMender()
+    d = m.add_pending("ai64-new", pubkey=old_key)
+    m.accept_device(d["id"], _set(d, 0))
+    m.accepted.clear()
+    m.add_pending("ai64-new", pubkey=other_board)          # the other board, same name, ITS key (= the reported one)
+    ok, dev, why = rigs.auto_accept(m, "ai64-new", other_board, timeout=5, interval=0.01)
+    assert (ok, dev) == (False, None) and m.accepted == []
+    assert why == rigs.ENROLLED_ELSEWHERE and "rotate the key manually (Mender UI)" in why
+    # through the API: the enrolled device keeps its key AND its tags
+    c = wire()
+    acc = mender.add_pending("ai64-two", pubkey=old_key)
+    mender.accept_device(acc["id"], _set(acc, 0))
+    mender.set_tags(acc["id"], {"name": "ai64-two", "role": "master", "local_ip": "10.0.0.144",
+                                "remote_ip": "100.64.0.5"})
+    tags_before, writes_before = mender.get_tags(acc["id"]), list(mender.tag_writes)
+    mender.accepted.clear()
+    run_id = _add(c, name="ai64-two", address="10.0.0.99", role="zonal").json()["run_id"]
+    mender.add_pending("ai64-two", pubkey=other_board)
+    colony.finish(run_id, log=provision_log("ai64-two", vpn="100.64.0.66", mender_key=other_board),
+                  vpn_ip="100.64.0.66")
+    run = _final(c, run_id)
+    assert run["accepted"] is False and "already enrolled with another key" in run["note"]
+    assert mender.accepted == []
+    assert [a["status"] for a in mender.find_by_identity("ai64-two")["auth_sets"]] == ["accepted", "pending"]
+    assert mender.get_tags(acc["id"]) == tags_before and mender.tag_writes == writes_before
 
 
 def test_accept_with_matching_key(wire, colony, mender):
@@ -582,3 +617,130 @@ def test_routes_need_the_key(wire):
     c = wire()
     assert c.get("/api/fleet").status_code == 401
     assert c.post("/api/rigs", json={}).status_code == 401
+
+
+# ── review 2026-11-19: values that reach colony's ansible, colony error bodies, the VPN key ─────────────────────────
+EVIL_ROLE = "master ansible_ssh_common_args=-oProxyCommand=touch/tmp/pwned"
+
+
+def _tagged_device(mender, dev_id, **tags):
+    mender.inv[dev_id] = {"id": dev_id, "attributes": [
+        {"name": "device_id", "value": "rig-t", "scope": "identity"},
+        *({"name": k, "value": v, "scope": "tags"} for k, v in tags.items())]}
+
+
+@pytest.mark.parametrize("tags,what", [
+    ({"remote_ip": "100.64.0.5", "role": EVIL_ROLE}, "role"),
+    ({"remote_ip": "100.64.0.5", "role": "Master"}, "role"),
+    ({"remote_ip": "100.64.0.5 -oProxyCommand=touch", "role": "master"}, "address"),
+    ({"remote_ip": "10.0.0.5;reboot", "role": "master"}, "address"),
+    ({"local_ip": "-oProxyCommand=x", "role": "master"}, "address"),
+    ({"local_ip": "999.1.1.1", "role": "zonal"}, "address"),
+])
+def test_tag_values_validated_before_deploy(wire, colony, mender, tags, what):
+    """Review 2026-11-19 (HIGH): Deploy runtime took host from the remote_ip / local_ip tags and role from the role
+    tag unchecked; colony passed them to ansible as k=v vars: a crafted tag injected variables (code execution on
+    the colony controller). Refused before colony is called."""
+    _tagged_device(mender, "dev-t", **tags)
+    r = wire().post("/api/rigs/rig-t/deploy", json={"runtime_version": "0.3.0-trixie-arm64"}, headers=KEY)
+    assert r.status_code == 422, r.text
+    j = r.json()
+    assert j["reason"] == "invalid-tag" and what in j["detail"]
+    assert "ProxyCommand" not in r.text
+    assert colony.created == []
+    # the good tags pass
+    _tagged_device(mender, "dev-t", remote_ip="100.64.0.5", role="zonal")
+    r = wire().post("/api/rigs/rig-t/deploy", json={"runtime_version": "0.3.0-trixie-arm64"}, headers=KEY)
+    assert r.status_code == 202, r.text
+    assert colony.created[-1]["host"] == "100.64.0.5" and colony.created[-1]["extra"]["role"] == "zonal"
+
+
+def test_journal_ansible_user_validated_before_deploy(wire, colony, mender):
+    sk = next(d for d in colony.journal.values() if d["rig"] == "sk-tda4vm" and d["kind"] == "provision")
+    sk["extra"]["ansible_user"] = "root ansible_connection=local"
+    r = wire().post("/api/rigs/sk-tda4vm/deploy", json={"runtime_version": "0.3.0-trixie-arm64"}, headers=KEY)
+    assert r.status_code == 422 and r.json()["reason"] == "invalid-tag" and colony.created == []
+
+
+@pytest.mark.parametrize("bad_key", ["0.3.0 x=1", "0.3.0;id", "../0.3.0", "0.3.0-trixie-arm64\n", "{{x}}"])
+def test_plane_key_validated(wire, colony, mender, monkeypatch, bad_key):
+    """Review 2026-11-19 (HIGH): the runtime key colony downloads came from the S3 plane index unchecked."""
+    from gs_api.routers import rigs as rigs_mod
+
+    class Plane:
+        def runtime_catalog(self):
+            return [{"version": "0.3.0", "distro": "trixie-arm64", "key": bad_key}]
+    monkeypatch.setattr(rigs_mod.clients, "plane_client", lambda s: Plane())
+    c = wire()
+    r = _add(c, runtime_version="0.3.0")
+    assert r.status_code == 502 and r.json()["reason"] == "bad-plane-key", r.text
+    r = _add(c, name="rig-default")                       # the default version (the newest plane release)
+    assert r.status_code == 502 and r.json()["reason"] == "bad-plane-key", r.text
+    r = c.post("/api/rigs/ai64-proto/deploy", json={"runtime_version": "0.3.0"}, headers=KEY)
+    assert r.status_code == 502 and r.json()["reason"] == "bad-plane-key", r.text
+    assert colony.created == []
+
+
+def _vpn_on(monkeypatch):
+    from gs_api import vpn
+    minted, revoked = [], []
+
+    def mint(machine):
+        minted.append(machine)
+        return "tskey-auth-kSECRET0123456789-abcdef", f"kid{len(minted)}"
+    monkeypatch.setattr(vpn, "enabled", lambda: True)
+    monkeypatch.setattr(vpn, "mint_rig_key_with_id", mint)
+    monkeypatch.setattr(vpn, "revoke_key", lambda kid: revoked.append(kid))
+    return minted, revoked
+
+
+def test_colony_error_body_never_relayed(wire, colony, monkeypatch, caplog):
+    """Review 2026-11-19 (MEDIUM): an older colony-api answered the `secrets` field with a 422 whose body carried
+    "input": {"vpn_authkey": "tskey-..."}; the GS relayed it in its 502. Never relayed, redacted in the log; the
+    minted key is revoked (LOW 6a)."""
+    import json as _json
+    from gs_api.colony_client import ColonyError
+    minted, revoked = _vpn_on(monkeypatch)
+    body = {"detail": [{"type": "extra_forbidden", "loc": ["body", "secrets"], "msg": "Extra inputs are not permitted",
+                        "input": {"vpn_authkey": "tskey-auth-kSECRET0123456789-abcdef"}}]}
+
+    def refuse(*a, **kw):
+        raise ColonyError("create", 422, _json.dumps(body).encode())
+    monkeypatch.setattr(colony, "create", refuse)
+    c = wire()
+    with caplog.at_level("WARNING"):
+        r = _add(c)
+    assert r.status_code == 502, r.text
+    assert "tskey" not in r.text and "vpn_authkey" not in r.text and "[422]" in r.json()["detail"]
+    assert "tskey-auth" not in caplog.text and "422" in caplog.text           # logged, redacted
+    assert revoked == ["kid1"]
+    # the CLI path (/api/deployments/base) never relays it either
+    r = c.post("/api/deployments/base", json={"rig": "rig-new", "kind": "provision", "ip": "10.0.0.50"},
+               headers=KEY)
+    assert r.status_code == 502 and "tskey" not in r.text and "vpn_authkey" not in r.text
+    # a ColonyError never carries the key in its text or body, whoever formats it
+    e = ColonyError("create", 422, _json.dumps(body).encode())
+    assert "tskey-auth" not in str(e) and "tskey-auth" not in _json.dumps(e.body)
+
+
+def test_minted_key_revoked_on_colony_409(wire, colony, monkeypatch):
+    minted, revoked = _vpn_on(monkeypatch)
+    colony.create_status, colony.create_conflict_id = 409, "f" * 32
+    r = _add(wire())
+    assert r.status_code == 409 and minted == ["rig-new"] and revoked == ["kid1"]
+    colony.create_status = 200
+    r = _add(wire(), name="rig-ok")
+    assert r.status_code == 202 and revoked == ["kid1"]                        # a started run keeps its key
+
+
+def test_mender_device_matches_identity_scope_only(wire, mender):
+    """Review 2026-11-19 (LOW 6c): a tag / inventory attribute named device_id is not the identity."""
+    from gs_api.routers import rigs
+    mender.inv["spoof"] = {"id": "spoof", "attributes": [
+        {"name": "device_id", "value": "rig-x", "scope": "inventory"},
+        {"name": "remote_ip", "value": "100.64.9.9", "scope": "tags"}]}
+    mender.inv["spoof2"] = {"id": "spoof2", "attributes": [
+        {"name": "device_id", "value": "rig-x", "scope": "tags"}]}
+    assert rigs._mender_device("rig-x") is None
+    mender.inv["real"] = {"id": "real", "attributes": [{"name": "device_id", "value": "rig-x", "scope": "identity"}]}
+    assert rigs._mender_device("rig-x")["id"] == "real"

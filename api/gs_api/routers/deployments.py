@@ -427,8 +427,12 @@ def deploy_base(req: BaseDeployRequest) -> dict:
     except Exception as e:  # noqa: BLE001
         # Turn a colony error (404 no-rig / no-host, connection refused, …) into a
         # clean JSON 502 so the GS UI shows a message instead of failing JSON.parse.
+        # colony's body is NEVER relayed (an older colony echoed the request, the VPN key included, in its 422):
+        # a fixed message + the status, the body redacted in the GS log only.
+        from .rigs import _colony_failed
+        err = _colony_failed(req.kind, req.rig, e)
         raise HTTPException(status_code=502,
-            detail=f"colony {req.kind} '{req.rig}' failed: {e}"
+            detail=err.detail
                    + ("" if host else " (no reachable IP for the device — "
                       "pass an IP or add the device to the VPN)"))
     did = dep["id"]

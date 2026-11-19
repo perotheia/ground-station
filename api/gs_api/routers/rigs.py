@@ -21,6 +21,7 @@ no accept, accepted = "not-a-mender-rig".
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import threading
 import time
@@ -37,6 +38,7 @@ from ..settings import settings
 from .devices import _flatten
 
 router = APIRouter(tags=["rigs"])
+log = logging.getLogger("gs_api.rigs")
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\Z")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}\Z")
@@ -359,12 +361,18 @@ def list_runs(rig: str | None = None) -> list:
 
 
 # ── the follower: the GS half of a run (Mender accept + tags, the base-state mirror) ──
+ENROLLED_ELSEWHERE = ("this name is already enrolled with another key: rotate the key manually (Mender UI) if the "
+                      "board was re-imaged")
+
+
 def auto_accept(m, name: str, pubkey_pem: str | None, timeout: float = None,
                 interval: float = None) -> tuple[bool, str | None, str | None]:
     """Accept the rig's pending Mender auth set: ONLY a set whose identity device_id == `name` AND whose public
     key equals `pubkey_pem` (the key provision read from the rig over ssh; compared as DER). The identity alone
     is what the device CLAIMS (anyone reaching the gateway can claim it): never enough. A set with another key
-    is never accepted, also not for a device already accepted (no key takeover). Polls until `timeout`.
+    is never accepted, also not for a device already accepted (no key takeover); and when the name already has an
+    ACCEPTED set with another key, nothing is accepted at all (ENROLLED_ELSEWHERE: a re-imaged board is rotated by
+    hand). Polls until `timeout`.
     Returns (accepted, devauth id, reason when not accepted)."""
     timeout = ACCEPT_TIMEOUT if timeout is None else timeout
     interval = ACCEPT_POLL if interval is None else interval
@@ -380,9 +388,14 @@ def auto_accept(m, name: str, pubkey_pem: str | None, timeout: float = None,
                 idd = d.get("identity_data") or {}
                 if not isinstance(idd, dict) or idd.get("device_id") != name:
                     continue
-                for a in d.get("auth_sets") or []:
-                    if (a.get("identity_data") or idd).get("device_id") != name:
-                        continue
+                sets = [a for a in d.get("auth_sets") or []
+                        if (a.get("identity_data") or idd).get("device_id") == name]
+                # The name is ENROLLED with another key: never accept a new key for it (review 2026-11-19: Add
+                # device <existing name> pointed at another board the fleet key reaches rewrote that board's
+                # identity, reported ITS key, and the GS accepted it and rewrote the device's tags = a takeover).
+                if any(a.get("status") == "accepted" and runlog.key_der(a.get("pubkey")) != want for a in sets):
+                    return False, None, ENROLLED_ELSEWHERE
+                for a in sets:
                     same = runlog.key_der(a.get("pubkey")) == want
                     if a.get("status") == "accepted" and same:
                         return True, d["id"], None                 # already accepted with the rig's own key
@@ -638,28 +651,32 @@ def add_rig(req: AddRig):
         bad = preflight(col, req.address, req.user)
         if bad:
             return _refuse(422, bad.pop("detail"), **bad)
-        secrets, vpn_note = None, "not configured (TS_API_TOKEN_FILE): provision WITHOUT the VPN join"
-        if vpn.enabled():
-            try:
-                secrets, vpn_note = {"vpn_authkey": vpn.mint_rig_key(name)}, "key minted"
-            except Exception as e:  # noqa: BLE001
-                raise HTTPException(status_code=502, detail=f"fleet VPN: cannot mint the rig key: {e}")
         extra = {"role": req.role, "mender_device_id": name, "ansible_user": req.user}
         ver = req.runtime_version or default_runtime_version(col, name)
         if ver:
             ver, why = resolve_runtime(ver)
             if why:
                 return _refuse(422, why, reason="invalid")
+            bad_key = _bad_plane_key(ver)
+            if bad_key:
+                return bad_key
             extra["runtime_version"] = ver
+        # the VPN key is minted last (after every refusal above) and revoked when colony does not take the run
+        secrets, vpn_note, key_id = None, "not configured (TS_API_TOKEN_FILE): provision WITHOUT the VPN join", ""
+        if vpn.enabled():
+            try:
+                key, key_id = vpn.mint_rig_key_with_id(name)
+                secrets, vpn_note = {"vpn_authkey": key}, "key minted"
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"fleet VPN: cannot mint the rig key: {e}")
         try:
             dep = col.create(name, "provision", host=req.address, extra=extra, secrets=secrets,
                              name=f"{UI_TAG}:provision:{name}")
-        except colony_mod.ColonyError as e:
-            if e.status == 409:
-                return _colony_409(name, e)
-            raise HTTPException(status_code=502, detail=f"colony provision '{name}': {e.detail or e}")
         except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"colony provision '{name}': {e}")
+            _revoke(key_id, name)
+            if isinstance(e, colony_mod.ColonyError) and e.status == 409:
+                return _colony_409(name, e)
+            raise _colony_failed("provision", name, e)
         _start_follower(dep["id"], name, "provision", vpn_minted=secrets is not None)
         return {"run_id": dep["id"], "rig": name, "kind": "provision", "vpn": vpn_note}
     finally:
@@ -667,15 +684,51 @@ def add_rig(req: AddRig):
             _starting.discard(name)
 
 
+def _revoke(key_id: str, rig: str) -> None:
+    """Revoke a minted VPN key the run will never use (colony refused it). Best effort: logged when it fails (the
+    key is single-use and short-lived anyway)."""
+    if not key_id:
+        return
+    try:
+        vpn.revoke_key(key_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("fleet VPN: could not revoke the unused key %s of %s: %s", key_id, rig,
+                    colony_mod.redact(str(e)))
+
+
+def _colony_failed(kind: str, rig: str, e: Exception) -> HTTPException:
+    """A colony create that failed: a FIXED message + the status for the UI; colony's body only in the GS log,
+    redacted. Never relayed (an older colony echoed the request, the VPN auth key included, in its 422)."""
+    st = getattr(e, "status", None)
+    if isinstance(e, colony_mod.ColonyError):
+        log.warning("colony %s '%s' refused [%s]: %s", kind, rig, st, colony_mod.redact(e.body))
+        return HTTPException(status_code=502, detail=f"colony-api refused the {kind} of '{rig}' [{st}] (details in "
+                                                      "the GS log)")
+    log.warning("colony %s '%s' failed: %s", kind, rig, colony_mod.redact(str(e)))
+    return HTTPException(status_code=502, detail=f"colony-api unreachable for the {kind} of '{rig}' (details in "
+                                                  "the GS log)")
+
+
+def _bad_plane_key(key: str | None) -> JSONResponse | None:
+    """The runtime key colony will download: a plain version key ([A-Za-z0-9._+-]) or a 502 (it comes from the
+    S3 plane index, which the GS does not author)."""
+    if key is None or check_version(key) is None:
+        return None
+    return _refuse(502, "the runtime plane names an invalid release key (not [A-Za-z0-9._+-]): refusing it, fix "
+                        "the plane index", reason="bad-plane-key")
+
+
 def _mender_device(rig: str) -> dict | None:
-    """The Mender inventory device of a rig: identity device_id == rig, else the name tag == rig."""
+    """The Mender inventory device of a rig: IDENTITY device_id == rig (the identity scope only: an inventory or
+    tag attribute named device_id is whatever the device or an operator wrote), else the name tag == rig."""
     try:
         m = _mender()
         devs = m.devices()
     except Exception:  # noqa: BLE001
         return None
     for d in devs:
-        attrs = {a.get("name"): a.get("value") for a in d.get("attributes", []) or []}
+        attrs = {a.get("name"): a.get("value") for a in d.get("attributes", []) or []
+                 if a.get("scope") == "identity"}
         if attrs.get("device_id") == rig:
             return d
     for d in devs:
@@ -732,23 +785,36 @@ def deploy_rig(name: str, req: DeployRig):
         if not host:
             return _refuse(422, f"{name}: no reachable address (no remote_ip / local_ip tag): re-provision it "
                                 "(Add device)", reason="no-address")
+        # host and role come from Mender tags / colony's journal and reach ansible on the colony controller:
+        # the same checks as Add device (review 2026-11-19: a crafted tag was an injection into the play)
+        if check_address(str(host)):
+            return _refuse(422, f"{name}: the device's address tag (remote_ip / local_ip) is not an IPv4 address or "
+                                "a host name: fix the tag in Mender or re-provision it (Add device)",
+                           reason="invalid-tag")
+        if role not in ROLES:
+            return _refuse(422, f"{name}: the device's role tag is not one of {', '.join(ROLES)}: fix the tag in "
+                                "Mender", reason="invalid-tag")
         prev = next(((d.get("extra") or {}).get("runtime_version") for d in
                      sorted(runs, key=lambda d: float(d.get("created") or 0), reverse=True)
                      if (d.get("extra") or {}).get("runtime_version")), None)
         key, why = resolve_runtime(req.runtime_version, prefer=prev)
         if why:
             return _refuse(422, why, reason="invalid")
+        bad_key = _bad_plane_key(key)
+        if bad_key:
+            return bad_key
         extra = {"role": role, "runtime_version": key}
         if pextra.get("ansible_user"):
+            if check_user(pextra["ansible_user"]):
+                return _refuse(422, f"{name}: the ssh user of its last provision is not a valid login name: "
+                                    "re-provision it (Add device)", reason="invalid-tag")
             extra["ansible_user"] = pextra["ansible_user"]
         try:
             dep = col.create(name, "orchestrate", host=host, extra=extra, name=f"{UI_TAG}:orchestrate:{name}")
-        except colony_mod.ColonyError as e:
-            if e.status == 409:
-                return _colony_409(name, e)
-            raise HTTPException(status_code=502, detail=f"colony orchestrate '{name}': {e.detail or e}")
         except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"colony orchestrate '{name}': {e}")
+            if isinstance(e, colony_mod.ColonyError) and e.status == 409:
+                return _colony_409(name, e)
+            raise _colony_failed("orchestrate", name, e)
         _start_follower(dep["id"], name, "orchestrate")
         return {"run_id": dep["id"], "rig": name, "kind": "orchestrate"}
     finally:

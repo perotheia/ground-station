@@ -30,8 +30,31 @@ def enabled() -> bool:
     return bool(_token())
 
 
+def _auth(req: urllib.request.Request, tok: str) -> None:
+    req.add_header("Authorization", "Basic " + base64.b64encode((tok + ":").encode()).decode())
+
+
 def mint_rig_key(machine: str) -> str:
     """A single-use, pre-authorised, tagged, short-lived auth key for ONE rig. Raises on an API error."""
+    return mint_rig_key_with_id(machine)[0]
+
+
+def revoke_key(key_id: str) -> None:
+    """Revoke a minted key that will not be used (the provision was refused): DELETE keys/<id>. Raises on error."""
+    tok = _token()
+    if not tok or not key_id:
+        raise RuntimeError("fleet VPN not configured, or no key id")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", key_id):
+        raise RuntimeError("not a Tailscale key id")
+    tailnet = os.environ.get("TS_TAILNET", "-")
+    req = urllib.request.Request(f"{_API}/tailnet/{tailnet}/keys/{key_id}", method="DELETE")
+    _auth(req, tok)
+    with urllib.request.urlopen(req, timeout=15):
+        pass
+
+
+def mint_rig_key_with_id(machine: str) -> tuple[str, str]:
+    """mint_rig_key + the key's id (to revoke it when the provision does not start)."""
     tok = _token()
     if not tok:
         raise RuntimeError("fleet VPN not configured (TS_API_TOKEN_FILE / TS_API_TOKEN)")
@@ -45,9 +68,10 @@ def mint_rig_key(machine: str) -> str:
     }
     req = urllib.request.Request(f"{_API}/tailnet/{tailnet}/keys", data=json.dumps(body).encode(), method="POST")
     req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", "Basic " + base64.b64encode((tok + ":").encode()).decode())
+    _auth(req, tok)
     with urllib.request.urlopen(req, timeout=15) as r:
-        key = json.loads(r.read() or b"{}").get("key", "")
+        ans = json.loads(r.read() or b"{}")
+    key = ans.get("key", "")
     if not key:
         raise RuntimeError("the Tailscale API returned no key")
-    return key
+    return key, str(ans.get("id") or "")
