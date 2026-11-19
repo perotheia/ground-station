@@ -159,6 +159,30 @@ def test_preflight_passes(wire, colony, sudo):
                            "runtime_version": "0.3.0-trixie-arm64"}
 
 
+def test_add_device_without_version_takes_the_rigs_last_runtime(wire, colony, monkeypatch):
+    """Regression (live T1 2026-11-19): Add device sent no runtime_version, colony found no OTA modules and the
+    provision failed. Re-provision keeps the version the rig last ran; a new rig gets the newest plane release."""
+    from gs_api.routers import rigs as rigs_mod
+    colony.probe_result = (200, {"hostname": "board", "sudo": "ok"})
+    old = {"id": "o1", "rig": "rig-new", "kind": "orchestrate", "created": 100.0, "extra": {"runtime_version": "0.2.9-trixie-arm64"},
+           "statistics": {"status": {"success": 1, "failure": 0, "pending": 0, "noartifact": 0}}}
+    newer_fail = {"id": "o2", "rig": "rig-new", "kind": "provision", "created": 200.0, "extra": {},
+                  "statistics": {"status": {"success": 0, "failure": 1, "pending": 0, "noartifact": 0}}}
+    colony.journal.update({"o1": old, "o2": newer_fail})
+    r = _add(wire())
+    assert r.status_code == 202, r.text
+    assert colony.created[-1]["extra"]["runtime_version"] == "0.2.9-trixie-arm64"
+
+    class Plane:
+        def runtime_catalog(self):
+            return [{"version": "0.3.0", "key": "0.3.0-trixie-arm64"}, {"version": "0.10.1", "key": "0.10.1-trixie-arm64"},
+                    {"_error": "x"}]
+    monkeypatch.setattr(rigs_mod.clients, "plane_client", lambda s: Plane())
+    r = _add(wire(), name="rig-fresh")
+    assert r.status_code == 202, r.text
+    assert colony.created[-1]["extra"]["runtime_version"] == "0.10.1-trixie-arm64"
+
+
 # ── auto-accept ──────────────────────────────────────────────────────────────
 def _final(c, run_id):
     return wait_for(lambda: (lambda j: j if j["status"] != "running" else None)(

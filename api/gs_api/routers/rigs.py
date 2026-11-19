@@ -554,6 +554,29 @@ def _colony_409(rig: str, e: "colony_mod.ColonyError") -> JSONResponse:
     return _conflict(rig, rid)
 
 
+def default_runtime_version(col, name: str) -> str | None:
+    """The runtime plane release a provision takes its OTA modules from when the operator named none: the
+    version this rig last ran successfully (re-provision keeps it), else the newest published one. None when
+    the plane is empty or unreadable (the provision then fails in colony with its own message).
+    Regression (live T1, 2026-11-19): Add device sent no version and colony found no OTA modules."""
+    try:
+        for r in sorted(col.deployments(), key=lambda r: float(r.get("created") or 0), reverse=True):
+            if r.get("rig") == name and ((r.get("statistics") or {}).get("status") or {}).get("success"):
+                v = (r.get("extra") or {}).get("runtime_version") or r.get("runtime_version")
+                if v and VERSION_RE.match(str(v)):
+                    return str(v)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        rel = [r for r in clients.plane_client(settings()).runtime_catalog() if "_error" not in r and r.get("version")]
+    except Exception:  # noqa: BLE001
+        return None
+    def _k(v):
+        return tuple(int(x) if x.isdigit() else 0 for x in re.split(r"[.\-]", str(v)))
+    rel.sort(key=lambda r: _k(r["version"]), reverse=True)
+    return str(rel[0].get("key") or rel[0]["version"]) if rel else None
+
+
 @router.post("/api/rigs", status_code=202, dependencies=[Depends(require_key)])
 def add_rig(req: AddRig):
     """Add device = PREFLIGHT (one ssh as <user>@<address> with the fleet key, through colony /probe) then the
@@ -588,8 +611,9 @@ def add_rig(req: AddRig):
             except Exception as e:  # noqa: BLE001
                 raise HTTPException(status_code=502, detail=f"fleet VPN: cannot mint the rig key: {e}")
         extra = {"role": req.role, "mender_device_id": name, "ansible_user": req.user}
-        if req.runtime_version:
-            extra["runtime_version"] = req.runtime_version
+        ver = req.runtime_version or default_runtime_version(col, name)
+        if ver:
+            extra["runtime_version"] = ver
         try:
             dep = col.create(name, "provision", host=req.address, extra=extra, secrets=secrets,
                              name=f"{UI_TAG}:provision:{name}")
