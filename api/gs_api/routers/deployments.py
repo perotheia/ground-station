@@ -210,6 +210,15 @@ _DEVICE_TERMINAL = {"success", "failure", "aborted", "noartifact",
 _device_list_cache: dict[str, list] = {}
 
 
+# presigned-URL secrets in a device log (the artifact download URL): shown as ***
+_AMZ_SECRET_RE = re.compile(r"(X-Amz-(?:Credential|Signature)=)[^&\s\"'<>]*")
+
+
+def redact_log(log: str) -> str:
+    """A device log with the X-Amz-Credential / X-Amz-Signature query values redacted."""
+    return _AMZ_SECRET_RE.sub(r"\1***", log or "")
+
+
 # theia-swp's rollback line in the device log: "ROLLBACK current → releases/<rel>"
 _ROLLBACK_RE = re.compile(r"ROLLBACK current\s*(?:->|→)\s*(?:releases/)?(\S+)")
 
@@ -259,7 +268,8 @@ def deployment_device_log(dep_id: str, device_id: str) -> dict:
     s = settings()
     try:
         log = mender_client(s).deployment_device_log(dep_id, device_id)
-        return {"deployment_id": dep_id, "device_id": device_id, "log": log}
+        # the UI shows it: no presigned-URL credential / signature in the page
+        return {"deployment_id": dep_id, "device_id": device_id, "log": redact_log(log)}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502,
                             detail=f"mender device log {dep_id}/{device_id}: {e}")
