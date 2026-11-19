@@ -5,6 +5,7 @@ import { Releases } from './views/Releases'
 import { Distributions } from './views/Distributions'
 import { Rollouts } from './views/Rollouts'
 import { Fleet } from './views/Fleet'
+import { RunsProvider } from './components/RunDrawer'
 
 // Update-Factory-style left-rail nav. Deployment is the default landing view (the
 // 3-column board). Scope-cut items (Usage, Users, Config-as-MFA) are dropped.
@@ -34,6 +35,7 @@ export default function App() {
   }, [])
 
   return (
+    <RunsProvider>
     <div className="h-full flex">
       {/* ── Left sidebar — spans the FULL height (top to bottom) ────────── */}
       <aside className="w-52 bg-sidebar border-r border-edge flex flex-col shrink-0">
@@ -96,6 +98,7 @@ export default function App() {
         </main>
       </div>
     </div>
+    </RunsProvider>
   )
 }
 
@@ -151,4 +154,31 @@ export function usePoll(fn, deps = [], intervalMs = 8000) {
     return () => clearInterval(t)
   }, [run, intervalMs])
   return { data, error, loading, refresh: run }
+}
+
+// Serial poll: the next request starts intervalMs AFTER the previous answered, so
+// two requests are never in flight (a slow backend call — e.g. /api/fleet with its
+// per-rig com probe — cannot pile up). refresh() polls now, or right after the
+// request in flight answers.
+export function useSerialPoll(fn, deps = [], intervalMs = 8000) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+  const kick = React.useRef(() => {})
+  useEffect(() => {
+    let live = true, timer = null, inflight = false, again = false
+    const tick = async () => {
+      clearTimeout(timer); inflight = true
+      try { const d = await fn(); if (live) { setData(d); setError(null) } }
+      catch (e) { if (live) setError(e.message) }
+      inflight = false
+      if (!live) return
+      if (again) { again = false; tick() } else timer = setTimeout(tick, intervalMs)
+    }
+    kick.current = () => { if (inflight) again = true; else tick() }
+    tick()
+    return () => { live = false; clearTimeout(timer); kick.current = () => {} }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, intervalMs])
+  const refresh = useCallback(() => kick.current(), [])
+  return { data, error, loading: data === null && error === null, refresh }
 }

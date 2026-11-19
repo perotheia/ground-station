@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import { api } from '../api'
 import { usePoll, useDeploymentDevices } from '../App'
-import { CreateTargetModal } from '../components/CreateTargetModal'
+import { AddDeviceModal } from '../components/AddDeviceModal'
 
 // The Deployment board — Update Factory's 3-column heart, retargeted to our two
 // authorities. Targets | Releases | Action History. Select a target + a release,
@@ -33,9 +33,8 @@ function RowConfirm({ label, onYes, onNo }) {
 }
 
 // ── Column 1: Targets (devices) ─────────────────────────────────────────────
-// ── Create New Target — SSH-probe enrolment modal ────────────────────────────
-// Operator types a Host IP → reload → colony-api SSHes it → prefill Controller ID
-// (MAC, the stable Mender identity) + Name (hostname). Type from Mender (stateless).
+// ── Add device (＋): the provisioning path — name/address/user/role, the GS
+// preflights ssh then provisions + auto-accepts; progress in the Run drawer.
 
 // Cleanup scope dialog: pick which layers to remove. app = the SWP overlay
 // (keep the runtime); runtime = the whole /opt/theia base; mender-state = the
@@ -109,7 +108,7 @@ function Targets({ sel, setSel, onAssigned }) {
         Targets
         <span className="ml-auto flex gap-1 text-muted">
           <span className="icon-btn" title="search">⌕</span>
-          <span className="icon-btn cursor-pointer" title="Create new Target" onClick={() => setShowCreate(true)}>＋</span>
+          <span className="icon-btn cursor-pointer" title="Add device" onClick={() => setShowCreate(true)}>＋</span>
           <span className="icon-btn" title="filter">▾</span>
         </span>
       </div>
@@ -160,7 +159,7 @@ function Targets({ sel, setSel, onAssigned }) {
       <div className="px-3 py-1.5 border-t border-edge text-[11px] text-muted">
         Total Targets: {devices.length}
       </div>
-      {showCreate && <CreateTargetModal onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); refresh() }} />}
+      {showCreate && <AddDeviceModal onClose={() => setShowCreate(false)} onStarted={() => refresh()} />}
       {cleanDlg && <CleanupDialog device={cleanDlg}
         onClose={() => setCleanDlg(null)}
         onRun={(scope) => { const d = cleanDlg; setCleanDlg(null); cleanup(d, scope) }} />}
