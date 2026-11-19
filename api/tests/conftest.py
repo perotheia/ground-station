@@ -326,6 +326,13 @@ def wire(monkeypatch, mender, colony, com_calls):
     for mod in (colony_client, deployments, devices):
         if hasattr(mod, "colony_client"):
             monkeypatch.setattr(mod, "colony_client", lambda s, _c=colony: _c)
+    class _Plane:                                  # the runtime plane the GS resolves versions against
+        releases = [{"version": "0.3.0", "distro": "trixie-arm64", "key": "0.3.0-trixie-arm64"},
+                    {"version": "0.2.9", "distro": "trixie-arm64", "key": "0.2.9-trixie-arm64"}]
+
+        def runtime_catalog(self):
+            return list(self.releases)
+    monkeypatch.setattr(clients, "plane_client", lambda s: _Plane())
     monkeypatch.setattr(rigs, "POLL", 0.02)
     monkeypatch.setattr(rigs, "ACCEPT_POLL", 0.02)
     monkeypatch.setattr(rigs, "ACCEPT_TIMEOUT", 0.5)

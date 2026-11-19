@@ -183,6 +183,44 @@ def test_add_device_without_version_takes_the_rigs_last_runtime(wire, colony, mo
     assert colony.created[-1]["extra"]["runtime_version"] == "0.10.1-trixie-arm64"
 
 
+def test_runtime_version_resolves_to_the_plane_key():
+    """Regression (live T7 2026-11-19): the UI sends a VERSION ("0.3.0"); colony needs the plane KEY
+    ("0.3.0-trixie-arm64") or its download fails deep in the play. Unknown versions are refused up front."""
+    from gs_api.routers import rigs as r
+
+    class P:
+        def __init__(self, rel):
+            self.rel = rel
+
+        def runtime_catalog(self):
+            return self.rel
+    one = [{"version": "0.3.0", "distro": "trixie-arm64", "key": "0.3.0-trixie-arm64"}]
+    two = one + [{"version": "0.3.0", "distro": "arago-aarch64", "key": "0.3.0-arago-aarch64"}]
+    import gs_api.clients as cl
+    orig = cl.plane_client
+    try:
+        cl.plane_client = lambda s: P(one)
+        assert r.resolve_runtime("0.3.0") == ("0.3.0-trixie-arm64", None)
+        assert r.resolve_runtime("0.3.0-trixie-arm64") == ("0.3.0-trixie-arm64", None)
+        key, why = r.resolve_runtime("9.9.9")
+        assert key is None and "not in the runtime plane" in why
+        cl.plane_client = lambda s: P(two)
+        assert r.resolve_runtime("0.3.0", prefer="0.2.9-arago-aarch64") == ("0.3.0-arago-aarch64", None)
+        key, why = r.resolve_runtime("0.3.0")
+        assert key is None and "several distros" in why
+    finally:
+        cl.plane_client = orig
+
+
+def test_deploy_sends_the_plane_key(wire, colony, mender):
+    c = wire()
+    colony.probe_result = (200, {"hostname": "board", "sudo": "ok"})
+    _add(c, runtime_version="0.3.0")
+    assert colony.created[-1]["extra"]["runtime_version"] == "0.3.0-trixie-arm64"
+    r = _add(c, name="rig-x", runtime_version="7.7.7")
+    assert r.status_code == 422 and "not in the runtime plane" in r.json()["detail"]
+
+
 # ── auto-accept ──────────────────────────────────────────────────────────────
 def _final(c, run_id):
     return wait_for(lambda: (lambda j: j if j["status"] != "running" else None)(

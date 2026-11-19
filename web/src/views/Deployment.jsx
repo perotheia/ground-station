@@ -394,6 +394,10 @@ function ActionHistory({ targetName, targetId }) {
               )
               const childRows = (expanded ? items : []).map((d) => {
                 const lc = lifecycle(d); const a = actionLabel(d); const live = isLive(d)
+                // this device's outcome in an app deployment: a health-gate rollback is named (live T8 2026-11-19)
+                const mine = d.authority === 'app' && targetId
+                  ? (depDevices[d.id] || []).find((x) => x.id === targetId) : null
+                const rb = mine && mine.rolled_back_to
                 return (
                   <tr key={d.id} className={`hover:bg-edge/20 ${single ? '' : 'bg-black/10'}`}>
                     <td className={`cell ${single ? '' : 'pl-5'}`}><span className={`badge ${d.authority === 'base' ? 'bg-violet-500/15 text-violet-300' : 'bg-cyan-500/15 text-cyan-300'}`}>{d.authority || 'app'}</span></td>
@@ -403,6 +407,7 @@ function ActionHistory({ targetName, targetId }) {
                     <td className="cell text-xs" style={{ color: lc.color }}>
                       {live && <span className="inline-block w-1.5 h-1.5 rounded-full mr-1 animate-pulse" style={{ background: lc.color }} />}
                       {lc.text}
+                      {rb && <span className="block text-[10px]" data-testid="rolled-back">rolled back to {rb}</span>}
                     </td>
                     <td className="cell text-right"><CancelBtn live={live} onCancel={() => cancel(d)} /></td>
                   </tr>

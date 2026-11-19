@@ -561,6 +561,33 @@ def _colony_409(rig: str, e: "colony_mod.ColonyError") -> JSONResponse:
     return _conflict(rig, rid)
 
 
+def resolve_runtime(value: str, prefer: str | None = None) -> tuple[str | None, str | None]:
+    """An operator's runtime choice -> the runtime PLANE KEY colony downloads (<version>-<distro>, the S3 prefix).
+    A key passes as is; a bare version maps to its release (one distro: that one; several: the distro of
+    `prefer`, the rig's previous key). (key, None) or (None, reason). Plane unreadable: the value passes and
+    colony reports. Regression (live T7 2026-11-19): the UI sent "0.3.0", colony fetched 0.3.0/manifest.tar.gz
+    and failed at the download."""
+    try:
+        rel = [r for r in clients.plane_client(settings()).runtime_catalog() if "_error" not in r and r.get("version")]
+    except Exception:  # noqa: BLE001
+        return value, None
+    keys = {str(r.get("key")) for r in rel if r.get("key")}
+    if value in keys:
+        return value, None
+    hits = [r for r in rel if str(r.get("version")) == value and r.get("key")]
+    if len(hits) == 1:
+        return str(hits[0]["key"]), None
+    if hits and prefer:
+        dist = prefer[len(prefer.split("-")[0]) + 1:] if "-" in prefer else ""
+        same = [r for r in hits if str(r.get("distro")) == dist]
+        if len(same) == 1:
+            return str(same[0]["key"]), None
+    if hits:
+        return None, (f"runtime {value} exists for several distros ({', '.join(sorted(str(r['key']) for r in hits))}): "
+                      "choose one")
+    return None, f"runtime {value} is not in the runtime plane (published: {', '.join(sorted(keys)) or 'none'})"
+
+
 def default_runtime_version(col, name: str) -> str | None:
     """The runtime plane release a provision takes its OTA modules from when the operator named none: the
     version this rig last ran successfully (re-provision keeps it), else the newest published one. None when
@@ -620,6 +647,9 @@ def add_rig(req: AddRig):
         extra = {"role": req.role, "mender_device_id": name, "ansible_user": req.user}
         ver = req.runtime_version or default_runtime_version(col, name)
         if ver:
+            ver, why = resolve_runtime(ver)
+            if why:
+                return _refuse(422, why, reason="invalid")
             extra["runtime_version"] = ver
         try:
             dep = col.create(name, "provision", host=req.address, extra=extra, secrets=secrets,
@@ -702,7 +732,13 @@ def deploy_rig(name: str, req: DeployRig):
         if not host:
             return _refuse(422, f"{name}: no reachable address (no remote_ip / local_ip tag): re-provision it "
                                 "(Add device)", reason="no-address")
-        extra = {"role": role, "runtime_version": req.runtime_version}
+        prev = next(((d.get("extra") or {}).get("runtime_version") for d in
+                     sorted(runs, key=lambda d: float(d.get("created") or 0), reverse=True)
+                     if (d.get("extra") or {}).get("runtime_version")), None)
+        key, why = resolve_runtime(req.runtime_version, prefer=prev)
+        if why:
+            return _refuse(422, why, reason="invalid")
+        extra = {"role": role, "runtime_version": key}
         if pextra.get("ansible_user"):
             extra["ansible_user"] = pextra["ansible_user"]
         try:
