@@ -35,8 +35,8 @@ _secrets() {
     SEC="${MENDER_SECRETS_FILE:-$WORK/../secrets/mender-server.env}"
     mkdir -p "$(dirname "$SEC")"
     if [ ! -f "$SEC" ]; then
-        ( umask 077; printf 'MENDER_ACCESS_KEY_ID=mender-%s\nMENDER_SECRET_ACCESS_KEY=%s\nMENDER_PRESIGN_SECRET=%s\n' \
-            "$(openssl rand -hex 4)" "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" > "$SEC" )
+        ( umask 077; printf 'MENDER_ACCESS_KEY_ID=mender\nMENDER_SECRET_ACCESS_KEY=%s\nMENDER_PRESIGN_SECRET=%s\n' \
+            "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" > "$SEC" )
     fi
     set -a; . "$SEC"; set +a
     cat > "$WORK/docker-compose.override.yml" <<'YML'
