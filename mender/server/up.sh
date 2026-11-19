@@ -23,6 +23,9 @@
 set -euo pipefail
 
 MENDER_SERVER_REF="${MENDER_SERVER_REF:-v4.1.5}"
+# The IMAGES are a separate pin: upstream's .env at a release tag is a MOVING tag (v4.0.1: `v4.0`; v4.1.5: `main`),
+# so a tagged checkout alone runs whatever was pushed last. Pin the images to the same release.
+export MENDER_IMAGE_TAG="${MENDER_IMAGE_TAG:-$MENDER_SERVER_REF}"
 WORK="${MENDER_SERVER_DIR:-$HOME/mender-server}"
 REPO="https://github.com/mendersoftware/mender-server.git"
 
