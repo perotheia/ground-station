@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic>=2.6",
     "boto3>=1.34",
+    "cryptography>=42",   # the fleet PKI signer (routers/pki.py)
     # GS as the ara::com OTA client: gRPC to a rig's com UcmView. grpcio-tools
     # compiles gs_api/proto/ucm_view.proto at import (no generated code in the repo).
     "grpcio>=1.60",

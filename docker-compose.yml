@@ -55,6 +55,7 @@ services:
       - ./fleet:/gs/fleet:ro      # clients.py loads fleet.py (the Mender client)
       - "${MENDER_CA_PATH:?}:/run/mender-server-ca.crt:ro"                # pins the Mender gateway certificate
       - "${TS_API_TOKEN_PATH:-/dev/null}:/run/secrets/ts_api_token:ro"   # unset = VPN join disabled
+      - "${GS_PKI_PATH:?set GS_PKI_PATH to a 0700 host directory for the fleet CA}:/run/fleet-ca"
     extra_hosts:
       - "docker.mender.io:${MENDER_GATEWAY_IP:?set MENDER_GATEWAY_IP (the address the gateway answers on, e.g. the GS tailnet IP)}"
     environment:
@@ -76,6 +77,7 @@ services:
       COLONY_API: "${COLONY_API:-http://colony-api:8081}"
       # the fleet VPN backend (api/gs_api/vpn.py): the Tailscale API token as a 0600 FILE, mounted read-only
       TS_API_TOKEN_FILE: /run/secrets/ts_api_token
+      GS_PKI_DIR: /run/fleet-ca            # the fleet CA (routers/pki.py); the host dir is 0700
       TS_TAILNET: "${TS_TAILNET:--}"
       COLONY_API_KEY: "${COLONY_API_KEY:?set COLONY_API_KEY in .env (openssl rand -hex 24)}"
       # The com aggregator answering ListMachines (cluster Observability presence +
@@ -110,6 +112,8 @@ services:
       THEIA_S3_ENDPOINT: "${THEIA_S3_ENDPOINT:?set THEIA_S3_ENDPOINT=http://<fleet host>:9000 in .env}"
       # the Mender server as the RIGS reach it (colony tasks/mender-enroll.yml); empty host = no Mender enrollment
       THEIA_S3_RIG_ENDPOINT: "https://${MENDER_RIG_HOST:-docker.mender.io}"   # rigs: the S3 plane through the gateway (TLS)
+      GS_PKI_URL: "http://gs-api:8080"       # the signer (tasks/pki-enroll.yml), with the GS key
+      GS_API_KEY: "${GS_API_KEY:?}"
       THEIA_S3_RIG_CA: /etc/mender/server.crt                                # the pinned gateway cert on the rig
       MENDER_SERVER_HOST: "${MENDER_RIG_HOST:-docker.mender.io}"
       MENDER_SERVER_IP: "${MENDER_RIG_IP:-}"

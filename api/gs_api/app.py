@@ -62,6 +62,8 @@ def create_app() -> FastAPI:
     app.include_router(planes.router)
     app.include_router(ucm.router)
     app.include_router(campaign.router)
+    from .routers import pki
+    app.include_router(pki.router)
     return app
 
 
