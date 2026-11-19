@@ -45,6 +45,18 @@ case "$ACTION" in
     # No override: upstream v4.1.5 ships traefik v3.7.x and its own S3 (SeaweedFS) and routes correctly on
     # Docker 29 (verified on panzer 2026-11-19). The old theia override + static routes are retired.
     rm -f "$WORK/docker-compose.override.yml" "$WORK/compose/config/traefik/theia-routes.yaml"
+    # The gateway's TLS key: upstream COMMITS a demo certificate + private key (compose/certs/mender.{crt,key}),
+    # i.e. a public key pair. Replace it with our own (once), same names (CN docker.mender.io + the fleet names in
+    # FLEET_TLS_NAMES); rigs and the GS pin this certificate.
+    if git -C "$WORK" diff --quiet -- compose/certs 2>/dev/null; then
+        echo "[server] generating the gateway certificate (replacing upstream's public demo key)"
+        san="DNS:docker.mender.io,DNS:*.docker.mender.io,DNS:localhost"
+        for n in ${FLEET_TLS_NAMES:-}; do case "$n" in *[0-9].*[0-9]) san="$san,IP:$n" ;; *) san="$san,DNS:$n" ;; esac; done
+        ( umask 077; openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 730 \
+            -subj "/CN=docker.mender.io/O=perotheia fleet" -addext "subjectAltName=$san" \
+            -keyout "$WORK/compose/certs/mender.key" -out "$WORK/compose/certs/mender.crt" 2>/dev/null )
+        chmod 644 "$WORK/compose/certs/mender.crt" "$WORK/compose/certs/mender.key"   # the containers read both
+    fi
     cd "$WORK"
     echo "[server] docker compose up -d (this pulls ~2-3GB on first run)"
     docker compose up -d

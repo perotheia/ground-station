@@ -28,8 +28,18 @@ services:
     image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
     container_name: gs-s3
     command: ["server", "-dir=/data", "-ip.bind=0.0.0.0", "-volume.max=64", "-s3", "-s3.port=9000", "-s3.config=/etc/seaweedfs/s3.json"]
+    # Reached over TLS only: the Mender project's gateway (traefik, :443) routes /theia-* here (labels below), so
+    # rigs and `theia release --s3` use https://<gateway name>/theia-runtime/... with the pinned gateway
+    # certificate. No plain-HTTP port on the network (GS_S3_LOCAL_BIND: loopback only, for maintenance).
     ports:
-      - "${GS_S3_BIND:-0.0.0.0}:9000:9000"   # S3 API: rigs (provision) + `theia release --s3`
+      - "${GS_S3_LOCAL_BIND:-127.0.0.1}:9000:9000"
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.gs-s3.rule: "PathPrefix(`/theia-`)"
+      traefik.http.routers.gs-s3.entrypoints: "websecure"
+      traefik.http.routers.gs-s3.tls: "true"
+      traefik.http.routers.gs-s3.priority: "99998"
+      traefik.http.services.gs-s3.loadbalancer.server.port: "9000"
     configs:
       - source: gs-s3-conf
         target: /etc/seaweedfs/s3.json
@@ -110,7 +120,7 @@ services:
     build: ./web
     container_name: gs-web
     ports:
-      - "${GS_WEB_PORT:-8088}:80"
+      - "${GS_BIND:-127.0.0.1}:${GS_WEB_PORT:-8088}:80"   # GS_BIND: the fleet-tailnet address of the GS, never 0.0.0.0
     environment:
       # injected into the /api proxy as X-GS-Key so the trusted operator browser
       # can call the mutating routes without ever carrying the key client-side.
