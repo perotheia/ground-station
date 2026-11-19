@@ -1,6 +1,5 @@
 import React from 'react'
 import { api } from '../api'
-import { usePoll } from '../App'
 
 // The two-plane rollout view — the Theia OTA superpower over a vanilla Mender UI:
 //   TRANSPORT plane (Mender): the deployment landing bits on each device.
@@ -44,8 +43,31 @@ function SmBadge({ progress }) {
   return <span className={`badge ${color}`}>SM: {s}</span>
 }
 
+// Poll every intervalMs, SERIALLY: the next request starts only after the previous
+// one answered (the ECU plane makes a com gRPC call per device and can take
+// seconds), so two requests are never in flight. Resets on a new deployment.
+function useSerialPoll(fn, deps, intervalMs) {
+  const [data, setData] = React.useState(null)
+  const [error, setError] = React.useState(null)
+  React.useEffect(() => {
+    let live = true
+    let timer = null
+    setData(null); setError(null)
+    const tick = async () => {
+      try { const d = await fn(); if (live) { setData(d); setError(null) } }
+      catch (e) { if (live) setError(e.message) }
+      if (live) timer = setTimeout(tick, intervalMs)
+    }
+    tick()
+    return () => { live = false; clearTimeout(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps)
+  return { data, error }
+}
+
 export function Rollout({ depId, onClose }) {
-  const { data, error } = usePoll(() => api.rollout(depId), [depId], 3000)
+  const { data, error } = useSerialPoll(() => api.rollout(depId), [depId], 10000)
+  const loading = !data && !error           // first answer not in yet: not "empty"
   const [aborting, setAborting] = React.useState(false)
   const [msg, setMsg] = React.useState(null)
 
@@ -72,7 +94,8 @@ export function Rollout({ depId, onClose }) {
         <div>
           <h3 className="font-semibold">{dep.name || depId.slice(0, 12)}</h3>
           <div className="text-xs text-muted">
-            artifact <span className="text-slate-300">{dep.artifact_name}</span> · {dep.status}
+            {loading ? 'loading…'
+              : <>artifact <span className="text-slate-300">{dep.artifact_name}</span> · {dep.status}</>}
           </div>
         </div>
         <div className="flex gap-2">
@@ -94,7 +117,8 @@ export function Rollout({ depId, onClose }) {
           {Object.entries(stats).filter(([, v]) => v > 0).map(([k, v]) => (
             <span key={k} className="badge bg-slate-500/15 text-slate-300">{k}: {v}</span>
           ))}
-          {Object.keys(stats).length === 0 && <span className="text-muted text-sm">no per-status data</span>}
+          {loading && <span className="text-muted text-sm">loading…</span>}
+          {!loading && Object.keys(stats).length === 0 && <span className="text-muted text-sm">no per-status data</span>}
         </div>
       </div>
 
@@ -104,7 +128,8 @@ export function Rollout({ depId, onClose }) {
           ECU plane · ara::ucm + ara::sm (over com)
         </div>
         <div className="space-y-3">
-          {ecu.length === 0 && <div className="text-muted text-sm">no target devices resolved</div>}
+          {loading && <div className="text-muted text-sm">loading… (reads each device over com)</div>}
+          {!loading && ecu.length === 0 && <div className="text-muted text-sm">no target devices resolved</div>}
           {ecu.map((d) => (
             <div key={d.device} className="rounded border border-edge/60 p-3">
               <div className="flex items-center justify-between mb-2">
