@@ -127,6 +127,13 @@ HOSTKEY = ("probe 10.0.0.50 failed: @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
     (502, {"detail": HOSTKEY}, "host-key-changed"),
     (502, {"detail": "probe 10.0.0.50 failed: Host key verification failed."}, "host-key-changed"),
     (200, {"hostname": "board", "sudo": "no"}, "no-sudo"),
+    # regression (live T4, 2026-11-19): a login banner filled colony's 200-char error and cut "Permission denied";
+    # the GS then said "unreachable". An unrecognised ssh failure is ssh-failed, never unreachable.
+    (502, {"detail": "probe 10.0.0.50 failed: Debian GNU/Linux 13\n\nBeagleBoard.org Debian Trixie Base Image "
+                     "2026-05-19\nSupport: https://bbb.io/debian\ndefault username is [debian]\n\nfoo@10.0.0.50: Pe"},
+     "ssh-failed"),
+    (502, {"detail": "probe 10.0.0.50 failed: Debian GNU/Linux 13\nSupport: https://bbb.io/debian\n\n"
+                     "foo@10.0.0.50: Permission denied (publickey)."}, "auth"),
 ])
 def test_preflight_errors(wire, colony, status, body, reason):
     colony.probe_result = (status, body)

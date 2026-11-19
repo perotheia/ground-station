@@ -96,6 +96,7 @@ function PreflightHelp({ pf, user, address }) {
       `The ssh host key of ${address} is not the one the Ground Station saw before. Either the board was re-flashed (then its old host key must be removed from the GS known_hosts) or a different machine now has this address. Check the address first.`],
     'no-sudo': ['The user cannot run sudo',
       `User ${user} can log in on ${address} but cannot run sudo without a password. Give ${user} passwordless sudo, or use a user that has it.`],
+    'ssh-failed': ['ssh to the board failed', null],
     invalid: ['Not accepted', null],
   }
   const [title, text] = words[pf.reason] || words.invalid

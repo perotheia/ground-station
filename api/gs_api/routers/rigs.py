@@ -126,13 +126,17 @@ _UNREACHABLE = ("timed out", "no route to host", "connection refused", "could no
 
 
 def classify_probe_error(text: str) -> str:
-    """ssh's error text (as colony /probe returns it) -> unreachable | auth | host-key-changed."""
+    """ssh's error text (as colony /probe returns it) -> unreachable | auth | host-key-changed | ssh-failed.
+    Only a recognised network failure is `unreachable`; anything else is `ssh-failed` with ssh's own words (a
+    login banner once hid "Permission denied" and the board was reported unreachable)."""
     t = (text or "").lower()
     if "remote host identification has changed" in t or "host key verification failed" in t:
         return "host-key-changed"
     if "permission denied" in t or "too many authentication failures" in t:
         return "auth"
-    return "unreachable"          # no route, timeout, refused, unresolvable, or an ssh failure we cannot name
+    if any(k in t for k in _UNREACHABLE):
+        return "unreachable"
+    return "ssh-failed"
 
 
 def preflight(col, address: str, user: str) -> dict | None:
@@ -169,8 +173,10 @@ def preflight(col, address: str, user: str) -> dict | None:
         out["detail"] = (f"the ssh host key of {address} CHANGED since colony first met it (a re-imaged board, "
                          "or another machine at this address). If the board was re-imaged, remove its old "
                          "key from colony's known_hosts and try again")
+    elif reason == "unreachable":
+        out["detail"] = f"{address} is unreachable over ssh: {text.strip()[-200:]}"
     else:
-        out["detail"] = f"{address} is unreachable over ssh: {text.strip()[:200]}"
+        out["detail"] = f"ssh as {user}@{address} failed: {text.strip()[-300:]}"
     return out
 
 
