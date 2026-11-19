@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import urllib.request
 
 _API = "https://api.tailscale.com/api/v2"
@@ -40,7 +41,7 @@ def mint_rig_key(machine: str) -> str:
             "reusable": False, "ephemeral": False, "preauthorized": True,
             "tags": [os.environ.get("GS_VPN_RIG_TAG", "tag:fleet-rig")]}}},
         "expirySeconds": int(os.environ.get("GS_VPN_KEY_TTL", "3600")),
-        "description": ("rig-enroll " + machine)[:50],
+        "description": re.sub(r"[^A-Za-z0-9 -]", "-", "rig-enroll " + machine)[:50],
     }
     req = urllib.request.Request(f"{_API}/tailnet/{tailnet}/keys", data=json.dumps(body).encode(), method="POST")
     req.add_header("Content-Type", "application/json")

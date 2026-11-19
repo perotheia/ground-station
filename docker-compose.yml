@@ -91,6 +91,8 @@ services:
       THEIA_WORKSPACE: /workspace
       COLONY_ANSIBLE: /colony/ansible
       COLONY_JOURNAL: /var/lib/colony/journal.jsonl
+      # the S3 plane as BOTH the controller (this container) and the rigs reach it: the fleet host's address
+      THEIA_S3_ENDPOINT: "${THEIA_S3_ENDPOINT:?set THEIA_S3_ENDPOINT=http://<fleet host>:9000 in .env}"
       ANSIBLE_HOST_KEY_CHECKING: "False"
       # API key gating the mutating routes (same pattern as gs-api).
       COLONY_API_KEY: "${COLONY_API_KEY:-}"
@@ -122,7 +124,7 @@ volumes:
 networks:
   mender:
     external: true
-    name: "${MENDER_NETWORK:-mender}"
+    name: "${MENDER_NETWORK:-fleet-mender_default}"
 
 configs:
   gs-s3-conf:

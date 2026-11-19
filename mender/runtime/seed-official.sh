@@ -32,8 +32,8 @@ DISTRO="${4:-}"
 # The plane KEY — version, optionally ABI-qualified. The rig's runtime_version
 # must equal this exactly (it's what install-runtime-s3.yml reads index.json under).
 KEY="$VER${DISTRO:+-$DISTRO}"
-export AWS_ACCESS_KEY_ID="${MINIO_USER:-theia}"
-export AWS_SECRET_ACCESS_KEY="${MINIO_PASSWORD:-theiaminio}"
+export AWS_ACCESS_KEY_ID="${S3_ACCESS_KEY:?set S3_ACCESS_KEY}"
+export AWS_SECRET_ACCESS_KEY="${S3_SECRET_KEY:?set S3_SECRET_KEY}"
 export AWS_DEFAULT_REGION="us-east-1"
 BUCKET="theia-runtime"
 aws="aws --endpoint-url $S3 s3"

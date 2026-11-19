@@ -335,6 +335,9 @@ def deploy_base(req: BaseDeployRequest) -> dict:
     # rig's tailnet address, recorded below as remote_ip (ops prefer remote_ip over local_ip).
     secrets = None
     vpn_note = "n/a"
+    if req.kind == "provision" and req.schedule:
+        # the VPN key is minted now and lives 1 h; the tailnet IP is recorded when the play ends
+        raise HTTPException(status_code=422, detail="a provision cannot be scheduled: run it now")
     if req.kind == "provision":
         from .. import vpn
         if vpn.enabled():
@@ -376,6 +379,9 @@ def deploy_base(req: BaseDeployRequest) -> dict:
             vpn_note = f"joined ({vpn_ip}) but the remote_ip tag was not written"
     elif vpn_ip:
         vpn_note = f"joined: {vpn_ip}"
+    elif vpn_note == "key minted" and ok:
+        ok = False                       # a key was handed over but colony reported no tailnet address
+        vpn_note = "key minted but colony reported no VPN address (old colony-api image, or the join was skipped)"
     _scope = req.scope or {"app": True, "runtime": True}
     if req.kind == "cleanup" and ok and _scope.get("runtime", True):
         # the device was deprovisioned — drop the colony base-state tags so the
