@@ -6,6 +6,8 @@ group is resolved to its devices here (the v1 API takes a device list).
 """
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -208,13 +210,32 @@ _DEVICE_TERMINAL = {"success", "failure", "aborted", "noartifact",
 _device_list_cache: dict[str, list] = {}
 
 
+# theia-swp's rollback line in the device log: "ROLLBACK current → releases/<rel>"
+_ROLLBACK_RE = re.compile(r"ROLLBACK current\s*(?:->|→)\s*(?:releases/)?(\S+)")
+
+
+def rolled_back_to(log: str) -> str | None:
+    """The release a device rolled back to, from its update log (None if it did not)."""
+    hit = _ROLLBACK_RE.search(log or "")
+    return hit.group(1) if hit else None
+
+
 def deployment_device_list(m, dep_id: str) -> list[dict]:
-    """The devices of a Mender deployment ([{id, status, log, ...}]), cached when final."""
+    """The devices of a Mender deployment ([{id, status, log, ...}]), cached when final.
+    A FAILED device with a log also gets `rolled_back_to` (the release theia-swp
+    restored), read once from its log."""
     hit = _device_list_cache.get(dep_id)
     if hit is not None:
         return hit
     rows = m.deployment_devices(dep_id) or []
-    if rows and all(r.get("status") in _DEVICE_TERMINAL for r in rows):
+    complete = True
+    for r in rows:
+        if r.get("status") == "failure" and r.get("log"):
+            try:
+                r["rolled_back_to"] = rolled_back_to(m.deployment_device_log(dep_id, r.get("id")))
+            except Exception:  # noqa: BLE001
+                complete = False          # read the log again next time
+    if complete and rows and all(r.get("status") in _DEVICE_TERMINAL for r in rows):
         _device_list_cache[dep_id] = rows
     return rows
 

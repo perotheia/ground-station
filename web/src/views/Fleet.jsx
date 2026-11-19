@@ -74,7 +74,10 @@ function TimelineEvent({ e }) {
         <div className="mt-1 rounded bg-black/40 border border-edge/50 p-2">
           {err && <div className="text-[11px] text-red-400">log: {err}</div>}
           {!err && log === null && <div className="text-[11px] text-muted">loading log…</div>}
-          {!err && log === '' && <div className="text-[11px] text-muted">no log reported by this device yet.</div>}
+          {!err && log === '' && <div className="text-[11px] text-muted">
+            {e.status === 'success'
+              ? 'no log (Mender keeps logs only for failed updates)'
+              : 'no log reported by this device yet.'}</div>}
           {!err && log && (
             <pre className="text-[10px] leading-tight text-slate-300 whitespace-pre-wrap max-h-64 overflow-auto font-mono">{log}</pre>
           )}

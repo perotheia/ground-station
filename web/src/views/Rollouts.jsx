@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { api } from '../api'
-import { usePoll } from '../App'
+import { usePoll, useDeploymentDevices } from '../App'
 import { Rollout } from './Rollout'
 
 // Rollouts — phased-by-group APP upgrades/downgrades (UF "Rollout View", trimmed
@@ -24,6 +24,21 @@ function bar(stats) {
       })}
     </div>
   )
+}
+
+// The DEVICES' outcome in a deployment (success / failure / ...), from its device
+// list — not the deployment's own `finished`. A device theia-swp rolled back says
+// so ("failure: rolled back to <release>").
+function deviceOutcome(devs, fallback) {
+  if (!devs || devs.length === 0) return fallback || '—'
+  const by = {}
+  for (const x of devs) {
+    const t = x.rolled_back_to ? `${x.status}: rolled back to ${x.rolled_back_to}` : (x.status || '?')
+    by[t] = (by[t] || 0) + 1
+  }
+  const parts = Object.entries(by)
+  if (devs.length === 1) return parts[0][0]
+  return parts.map(([t, n]) => `${t} ×${n}`).join(' · ')
 }
 
 // abi encoded in an artifact/runtime label (bookworm-arm64, amd64, ...).
@@ -284,6 +299,7 @@ export function Rollouts() {
   const [active, setActive] = useState(null)   // the in-progress phase plan
   const [busyAbort, setBusyAbort] = useState(null)
   const deps = (data?.deployments || []).filter((d) => d.authority !== 'base')  // app rollouts
+  const depDevices = useDeploymentDevices(deps)
   const rollouts = (rdata?.rollouts || []).filter((r) => !r._error)
 
   const abort = async (id) => {
@@ -339,7 +355,8 @@ export function Rollouts() {
                     className={`cursor-pointer hover:bg-edge/20 ${sel === d.id ? 'row-sel' : ''}`}>
                   <td className="cell text-sm">{d.name}</td>
                   <td className="cell"><span className="badge bg-slate-500/15 text-slate-300">{d.artifact_name}</span></td>
-                  <td className="cell text-xs">{d.status}</td>
+                  <td className="cell text-xs" title={`deployment: ${d.status}`}>
+                    {deviceOutcome(depDevices[d.id], d.status)}</td>
                   <td className="cell">{bar(d.statistics?.status || d.statistics)}</td>
                   <td className="cell text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <button className="icon-btn" title={done ? 'finished' : 'abort'}

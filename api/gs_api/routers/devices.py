@@ -817,13 +817,18 @@ def device_timeline(device_id: str) -> dict:
                 except Exception as e:  # noqa: BLE001
                     errors["app"] = f"device list of {d.get('id')}: {e}"
                     continue
-                touched = any(x.get("id") == device_id for x in dlist)
-                if touched:
+                mine = next((x for x in dlist if x.get("id") == device_id), None)
+                if mine:
+                    # THIS device's outcome in the deployment (success / failure /
+                    # ...), not the deployment's own `finished`.
+                    dst = mine.get("status") or d.get("status") or "?"
+                    rb = mine.get("rolled_back_to")
                     events.append({
                         "authority": "app", "kind": "deployment",
                         "title": d.get("name") or d.get("artifact_name") or d.get("id"),
-                        "detail": (d.get("status") or "?"),
-                        "ts": d.get("created"), "status": d.get("status"),
+                        "detail": (f"{dst}: rolled back to {rb}" if rb else dst),
+                        "ts": mine.get("created") or d.get("created"), "status": dst,
+                        "rolled_back_to": rb, "has_log": bool(mine.get("log")),
                         "id": d.get("id"),
                         # a Mender app deployment has a per-device log — the
                         # frontend expands the event to fetch it
