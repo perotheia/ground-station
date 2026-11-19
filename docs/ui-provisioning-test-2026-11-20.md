@@ -119,3 +119,19 @@ binaries run on the real image, dbus-broker takes the policy, the SK checks in a
 - Small: `enroll-rig.sh` demands SERVER_SSH with SERVER_CA set; the colony template nests `com_insecure` inside the
   `tipc_scope=cluster` block (fails safe); enroll inventory hardcodes `device_type=theia-rig`; the theia `demo/`
   workspace the old e2e used is gone (the e2e now packs its own apps).
+
+## 8. HIL app OTA path (the wc app's route), proven with a synthetic SWP (2026-11-19 late)
+theia main `60e029ec` (G1 gate + the release-swp start_cmd fix), runtime **0.3.2** on the AI-64 (Deploy runtime
+through the UI: stack restarted onto 0.3.2, gate module installed), GS `4b4c6fc` (`tools/swp-publish.sh`).
+Synthetic app `hilprobe` (alpha + beta + health hook; workspace /bigdata/work/architect/hilprobe-ws) built with
+`theia release-swp --arch ai64`, signed + uploaded with `swp-publish.sh`, rolled out from the GS (New Rollout API).
+| test | result |
+|---|---|
+| H1 hilprobe 0.1.0 -> AI-64 | success: `current` = releases/hilprobe-0.1.0, alpha + beta run from it, hook "alpha + beta" exit 0, commit stood |
+| H2 hilprobe 0.1.1 (beta exits at start) | gate: "app process 'beta' MISSING ... Mender will roll back"; ROLLBACK -> hilprobe-0.1.0, both processes running again; UI: "rolled back to hilprobe-0.1.0-trixie-arm64" (shots-live/50, 51) |
+| Guards | unchanged (no reboot, holds, extlinux, r5f running). The R5F firmware + ttyRPMSG0 changes at 20:46 UTC were opus's HIL firmware swap from 10.0.0.78 (journal), not the OTA path. |
+Not run tonight (budget): H3 unsigned refused (proven 2026-11-19 with the base SWP), H4 runtime mismatch (API test
+`test_rollout_refuses_runtime_mismatch`), H5 next iteration. Known small defect: the GS artifact list shows
+`requires_runtime` empty although swp-publish writes it into the Mender metadata (the abi check by name applies).
+For the wc SWP: an SWP's executor.json REPLACES the rig's supervised tree: keep the runtime's services exactly
+(nm, fw, tsync, rds off; machine master) or the board can lose its network.
