@@ -166,6 +166,20 @@ def _channel(target: str):
                        "(GS_COM_INSECURE=1 for a debug rig)")
 
 
+def short_error(e: Exception) -> str:
+    """One line for the UI instead of the raw gRPC dump: '<STATUS>: <details>'."""
+    code, details = getattr(e, "code", None), getattr(e, "details", None)
+    if callable(code) and callable(details):
+        try:
+            c = code()
+            d = (details() or "").strip().splitlines()
+            return f"{getattr(c, 'name', c)}: {d[0] if d else ''}".strip(": ")[:200]
+        except Exception:  # noqa: BLE001
+            pass
+    lines = str(e).strip().splitlines()
+    return (lines[0] if lines else type(e).__name__)[:200]
+
+
 # UcmState ordinal → name (mirrors system_services_ucm.UcmState).
 UCM_STATE = ["IDLE", "DOWNLOADED", "VALIDATED", "STAGED", "INSTALLING",
              "RESTARTING", "VERIFYING", "ACTIVE", "ROLLBACK"]

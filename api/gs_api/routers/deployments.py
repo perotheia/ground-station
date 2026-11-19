@@ -880,7 +880,9 @@ def rollout(dep_id: str) -> dict:
             try:
                 rec["progress"] = com_client.get_progress(target, timeout=4.0)
             except Exception as e:  # noqa: BLE001
-                rec["error"] = str(e)
+                rec["error"] = com_client.short_error(e)   # one line, not the gRPC dump
+        else:
+            rec["error"] = "no reachable address (no remote_ip / local_ip tag)"
         ecu.append(rec)
 
     return {"transport": {"deployment": dep, "statistics": stats},
@@ -926,14 +928,14 @@ def _deployment_device_ids(m, dep_id: str, dep: dict) -> list[str]:
 
 
 def _com_endpoint(dev: dict | None) -> str | None:
+    """A rig's com endpoint = its REACHABLE address (the remote_ip tag, else
+    local_ip — the same address ops use), :7700. Not the first ipv4_* inventory
+    value: that is an on-board NIC (the AI-64 reports a 192.168.64.x usb/eth
+    address first), not where the GS can reach it."""
     if not dev:
         return None
-    attrs = {a["name"]: a["value"] for a in dev.get("attributes", []) or []}
-    for k, v in attrs.items():
-        if k.startswith("ipv4") and v:
-            ip = (v[0] if isinstance(v, list) else v)
-            return f"{str(ip).split('/')[0]}:7700"
-    return None
+    ip = _flatten(dev).get("reachable_ip")
+    return f"{str(ip).split('/')[0]}:7700" if ip else None
 
 
 # ── Distribution one-click deploy (UF concept) ───────────────────────────────

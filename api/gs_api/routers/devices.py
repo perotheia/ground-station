@@ -248,7 +248,7 @@ def _observed() -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
-            detail=f"ListMachines @ {_aggregator()} failed: {e}. The Observability "
+            detail=f"ListMachines @ {_aggregator()} failed: {com_client.short_error(e)}. The Observability "
                    "aggregator must be reachable (the fleet runs ListMachines "
                    "everywhere — no degrade).")
     return {
