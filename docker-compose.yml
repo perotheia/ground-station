@@ -54,9 +54,9 @@ services:
     volumes:
       - ./fleet:/gs/fleet:ro      # clients.py loads fleet.py (the Mender client)
       - "${MENDER_CA_PATH:?}:/run/mender-server-ca.crt:ro"                # pins the Mender gateway certificate
+      - "${TS_API_TOKEN_PATH:-/dev/null}:/run/secrets/ts_api_token:ro"   # unset = VPN join disabled
     extra_hosts:
       - "docker.mender.io:${MENDER_GATEWAY_IP:?set MENDER_GATEWAY_IP (the address the gateway answers on, e.g. the GS tailnet IP)}"
-      - "${TS_API_TOKEN_PATH:-/dev/null}:/run/secrets/ts_api_token:ro"   # unset = VPN join disabled
     environment:
       # The Mender GW (server DNS name on the mender network) + a PAT.
       MENDER_SERVER: "${MENDER_SERVER:-https://docker.mender.io}"   # the gateway by its certificate name (network alias below)
